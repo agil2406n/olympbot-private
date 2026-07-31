@@ -1,0 +1,17 @@
+[Unit]
+Description=OlympBot local-only noVNC web gateway
+After=olympbot-vnc.service
+Requires=olympbot-vnc.service
+
+[Service]
+Type=simple
+User=olympbot
+Group=olympbot
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc/ 127.0.0.1:6080 127.0.0.1:5900
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

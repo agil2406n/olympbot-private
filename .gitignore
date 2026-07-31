@@ -1,0 +1,47 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*
+*secrets*
+
+# Python/runtime state
+__pycache__/
+*.py[cod]
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+*.jsonl
+runtime/
+demo_data/
+olymp_user_data/
+browser-profile/
+
+# Generated packages and local test artifacts
+*.zip
+work/
+*-test-data*/
+*-test-profile*/
+diagnostic-data/
+diagnostic-profile/
+balance-test-data*/
+balance-test-profile*/
+history-test-data/
+history-test-profile/
+history-persist-test/
+history-persist-profile/
+sync-test-data/
+sync-test-profile/
+test-*/
+*.inspect.sqlite3
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

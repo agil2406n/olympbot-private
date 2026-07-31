@@ -1,0 +1,17 @@
+[Unit]
+Description=OlympBot local-only VNC
+After=olympbot-xvfb.service
+Requires=olympbot-xvfb.service
+
+[Service]
+Type=simple
+User=olympbot
+Group=olympbot
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -forever -shared -nopw -rfbport 5900
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
