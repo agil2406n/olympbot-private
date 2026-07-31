@@ -1,0 +1,133 @@
+name: Validate and deploy OlympBot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "outputs/*.py"
+      - "outputs/requirements.txt"
+      - "deploy/*.service"
+      - "requirements.txt"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: olympbot-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Validate Python sources
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m py_compile \
+            outputs/olympbot_demo_core.py \
+            outputs/OlympBot_Professional.py
+
+      - name: Verify deployment configuration
+        env:
+          DEPLOY_HOST: ${{ vars.OLYMPBOT_HOST }}
+          DEPLOY_USER: ${{ vars.OLYMPBOT_USER }}
+          DEPLOY_KEY: ${{ secrets.OLYMPBOT_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.OLYMPBOT_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+
+      - name: Configure pinned SSH connection
+        env:
+          DEPLOY_KEY: ${{ secrets.OLYMPBOT_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.OLYMPBOT_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/olympbot_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/olympbot_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy with rollback and health check
+        env:
+          DEPLOY_HOST: ${{ vars.OLYMPBOT_HOST }}
+          DEPLOY_USER: ${{ vars.OLYMPBOT_USER }}
+        run: |
+          set -Eeuo pipefail
+          SSH=(ssh -i "$HOME/.ssh/olympbot_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          SCP=(scp -i "$HOME/.ssh/olympbot_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          RELEASE="/tmp/olympbot-deploy-$GITHUB_SHA"
+
+          "${SSH[@]}" "$TARGET" "mkdir -p '$RELEASE/app' '$RELEASE/deploy'"
+          "${SCP[@]}" \
+            outputs/olympbot_demo_core.py \
+            outputs/OlympBot_Professional.py \
+            "$TARGET:$RELEASE/app/"
+          "${SCP[@]}" deploy/*.service "$TARGET:$RELEASE/deploy/"
+
+          "${SSH[@]}" "$TARGET" bash -s -- "$RELEASE" "$GITHUB_SHA" <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE="$1"
+          REVISION="$2"
+          APP_DIR=/opt/olympbot/app
+          BACKUP_DIR="/opt/olympbot/backups/$REVISION"
+
+          rollback() {
+            echo "Deployment failed; restoring the previous release"
+            if [ -d "$BACKUP_DIR/app" ]; then
+              install -o olympbot -g olympbot -m 0644 "$BACKUP_DIR/app/olympbot_demo_core.py" "$APP_DIR/olympbot_demo_core.py"
+              install -o olympbot -g olympbot -m 0644 "$BACKUP_DIR/app/OlympBot_Professional.py" "$APP_DIR/OlympBot_Professional.py"
+            fi
+            if [ -d "$BACKUP_DIR/deploy" ]; then
+              install -m 0644 "$BACKUP_DIR"/deploy/*.service /etc/systemd/system/
+              systemctl daemon-reload
+            fi
+            systemctl restart olympbot.service || true
+          }
+          trap rollback ERR
+
+          /opt/olympbot/venv/bin/python -m py_compile \
+            "$RELEASE/app/olympbot_demo_core.py" \
+            "$RELEASE/app/OlympBot_Professional.py"
+
+          mkdir -p "$BACKUP_DIR/app" "$BACKUP_DIR/deploy"
+          cp -a "$APP_DIR/olympbot_demo_core.py" "$APP_DIR/OlympBot_Professional.py" "$BACKUP_DIR/app/"
+          cp -a /etc/systemd/system/olympbot*.service "$BACKUP_DIR/deploy/"
+
+          install -o olympbot -g olympbot -m 0644 "$RELEASE/app/olympbot_demo_core.py" "$APP_DIR/olympbot_demo_core.py"
+          install -o olympbot -g olympbot -m 0644 "$RELEASE/app/OlympBot_Professional.py" "$APP_DIR/OlympBot_Professional.py"
+          install -m 0644 "$RELEASE"/deploy/*.service /etc/systemd/system/
+          systemctl daemon-reload
+          systemctl restart olympbot.service
+
+          healthy=false
+          for _ in $(seq 1 36); do
+            if curl -fsS --max-time 5 http://127.0.0.1:5000/api/dashboard \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["state"]["connected"]; p=d["trading"]["platform_demo"]; assert p["demo_verified"] and p["execution_enabled"] and float(p["visible_trade_amount"]) == 1.0' \
+              2>/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" = true
+          systemctl is-active --quiet olympbot.service
+          trap - ERR
+          echo "OlympBot deployment $REVISION is healthy"
+          REMOTE
