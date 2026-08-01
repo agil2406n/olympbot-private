@@ -1107,6 +1107,7 @@ if _cached_candles:
 def _resolved_watch_assets() -> list[dict]:
     """Resolve each configured watch slot to one concrete OlympTrade pair."""
     required = _required_candles()
+    current_bucket = int(time.time() // CANDLE_INTERVAL_SEC) * CANDLE_INTERVAL_SEC
     resolved = []
     with candles_lock:
         for order, asset in enumerate(WATCH_ASSETS):
@@ -1120,16 +1121,19 @@ def _resolved_watch_assets() -> list[dict]:
                         "pair": pair,
                         "count": count,
                         "latest": latest,
+                        "fresh": latest >= current_bucket - CANDLE_INTERVAL_SEC * 2,
                         "preference": preference,
                     }
                 )
-            # Hazır axına üstünlük ver; bərabərlikdə OTC/ilk namizəd seçilir.
+            # Canlı axına üstünlük ver. Beləliklə həftəsonu bağlı adi bazarın
+            # köhnə şamları açıq OTC axınından üstün seçilmir.
             selected = max(
                 candidates,
                 key=lambda item: (
+                    item["fresh"],
                     item["count"] >= required,
-                    item["count"],
                     item["latest"],
+                    item["count"],
                     -item["preference"],
                 ),
             )
@@ -3259,28 +3263,55 @@ ASSET_PICKER_OPENER_DOM_SCRIPT = r"""
 """
 
 
-def _find_asset_picker_result(page, pair: str):
+ASSET_PICKER_RESULT_DOM_SCRIPT = r"""
+({labels}) => {
+  const visible = el => {
+    if (!el) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && rect.width > 0 && rect.height > 0;
+  };
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const wanted = labels.map(label => norm(label).toLocaleLowerCase());
+  const menu = document.querySelector('[role="menu"]') || document.body;
+  const names = [...menu.querySelectorAll('p,span,div')].filter(el => {
+    if (!visible(el)) return false;
+    const own = norm(el.innerText || el.textContent).toLocaleLowerCase();
+    return wanted.includes(own);
+  });
+  let closedMatch = '';
+  for (const name of names) {
+    let row = name;
+    for (let depth = 0; row && row !== menu && depth < 7; depth++, row = row.parentElement) {
+      const text = norm(row.innerText || row.textContent);
+      if (!text || text.length > 240) continue;
+      const closed = /(kapalı|closed|bağlı|bağlanıb|недоступ|закрыт)/i.test(text);
+      const tradable = /%\s*\d+|\d+\s*%/.test(text);
+      if (closed) {
+        closedMatch = text;
+        break;
+      }
+      if (!tradable) continue;
+      row.click();
+      return {status: 'clicked', label: norm(name.innerText || name.textContent), text};
+    }
+  }
+  if (closedMatch) return {status: 'closed', text: closedMatch};
+  return {status: 'missing', text: ''};
+}
+"""
+
+
+def _click_asset_picker_result(page, pair: str) -> dict:
     labels = WATCH_PAIR_LABELS.get(pair, ())
-    for label in labels:
-        pattern = re.compile(
-            rf"^\s*{re.escape(label)}(?:\s|$)",
-            re.IGNORECASE,
+    try:
+        result = page.evaluate(
+            ASSET_PICKER_RESULT_DOM_SCRIPT,
+            {"labels": list(labels)},
         )
-        candidates = page.get_by_text(pattern)
-        for index in range(min(candidates.count(), 100)):
-            candidate = candidates.nth(index)
-            try:
-                if not candidate.is_visible():
-                    continue
-                clickable = candidate.locator(
-                    'xpath=ancestor-or-self::*[self::button or @role="button"][1]'
-                )
-                if clickable.count() and clickable.first.is_visible():
-                    return clickable.first
-                return candidate
-            except Exception:
-                continue
-    return None
+    except Exception as exc:
+        return {"status": "error", "text": str(exc)}
+    return result if isinstance(result, dict) else {"status": "missing", "text": ""}
 
 
 def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
@@ -3394,12 +3425,15 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
             page.wait_for_timeout(350)
         except Exception:
             continue
-        target = _find_asset_picker_result(page, pair)
-        if target is None:
-            continue
-        try:
-            target.click(timeout=3000)
-        except Exception:
+        result = _click_asset_picker_result(page, pair)
+        status = str(result.get("status") or "missing")
+        if status == "closed":
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return False, f"{pair} bazarı hazırda bağlıdır; bağlı aktiv seçilmədi"
+        if status != "clicked":
             continue
         for _ in range(28):
             page.wait_for_timeout(250)
