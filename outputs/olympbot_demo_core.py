@@ -136,7 +136,9 @@ WATCH_ASSETS = (
 )
 WATCH_PAIR_LABELS = {
     "BNBUSD_OTC": ("BNB OTC",),
-    "BNBUSD": ("BNB", "BNB/USD"),
+    # OlympTrade BNB OTC-ni UI-də bu adla göstərir, canlı axında isə cüt kodu
+    # BNBUSD kimi gəlir. Buna görə dəqiq UI adı birinci yoxlanılır.
+    "BNBUSD": ("BNB OTC", "BNB", "BNB/USD"),
     "EURUSD_OTC": ("EUR/USD OTC", "EURUSD OTC"),
     "EURUSD": ("EUR/USD", "EURUSD"),
     "BTCUSD_OTC": ("Bitcoin OTC", "BTC OTC", "BTC/USD OTC"),
