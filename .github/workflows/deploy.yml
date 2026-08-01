@@ -117,7 +117,7 @@ jobs:
           systemctl restart olympbot.service
 
           healthy=false
-          for _ in $(seq 1 36); do
+          for _ in $(seq 1 24); do
             if curl -fsS --max-time 5 http://127.0.0.1:5000/api/dashboard \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["state"]["connected"]; p=d["trading"]["platform_demo"]; assert p["demo_verified"] and p["execution_enabled"] and float(p["visible_trade_amount"]) >= 1.0' \
               2>/dev/null; then
@@ -126,6 +126,11 @@ jobs:
             fi
             sleep 5
           done
+          if [ "$healthy" != true ]; then
+            echo "OlympBot health check failed; service diagnostics follow"
+            systemctl --no-pager --full status olympbot.service || true
+            journalctl --no-pager -u olympbot.service -n 120 || true
+          fi
           test "$healthy" = true
           systemctl is-active --quiet olympbot.service
           trap - ERR
