@@ -141,7 +141,14 @@ WATCH_PAIR_LABELS = {
     "BNBUSD": ("BNB OTC", "BNB", "BNB/USD"),
     "EURUSD_OTC": ("EUR/USD OTC", "EURUSD OTC"),
     "EURUSD": ("EUR/USD", "EURUSD"),
-    "BTCUSD_OTC": ("Bitcoin OTC", "BTC OTC", "BTC/USD OTC"),
+    "BTCUSD_OTC": (
+        "Bitcoin OTC",
+        "Bitcoin (OTC)",
+        "BTC OTC",
+        "BTC/USD OTC",
+        "BTC/USD (OTC)",
+        "BTCUSD OTC",
+    ),
     "BTCUSD": ("Bitcoin", "BTC/USD", "BTCUSD"),
     "ETHUSD_OTC": ("Ethereum OTC", "ETH OTC", "ETH/USD OTC"),
     "ETHUSD": ("Ethereum", "ETH/USD", "ETHUSD"),
@@ -3237,26 +3244,6 @@ def _find_platform_pair_tab(page, pair: str):
     return None
 
 
-def _pair_has_recent_market_data(pair: str, max_age: float = 180.0) -> bool:
-    """Accept tick or minute-OHLC feeds that may not update immediately after a tab click."""
-    with candles_lock:
-        latest = dict(live_prices.get(pair, {}))
-        history = list(candles.get(pair, ()))
-    timestamps = []
-    try:
-        timestamps.append(float(latest.get("ts") or 0))
-    except (TypeError, ValueError):
-        pass
-    if history:
-        try:
-            last_bucket = float(history[-1].get("bucket") or 0)
-            timestamps.append(last_bucket + CANDLE_INTERVAL_SEC)
-        except (AttributeError, TypeError, ValueError):
-            pass
-    newest = max(timestamps, default=0.0)
-    return newest > 0 and time.time() - newest <= max_age
-
-
 ASSET_PICKER_OPENER_DOM_SCRIPT = r"""
 () => {
   const visible = el => {
@@ -3312,12 +3299,19 @@ ASSET_PICKER_RESULT_DOM_SCRIPT = r"""
       && rect.width > 0 && rect.height > 0;
   };
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
-  const wanted = labels.map(label => norm(label).toLocaleLowerCase());
+  const key = value => norm(value).toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+  const wanted = labels.map(key).filter(Boolean);
   const menu = document.querySelector('[role="menu"]') || document.body;
   const names = [...menu.querySelectorAll('p,span,div')].filter(el => {
     if (!visible(el)) return false;
-    const own = norm(el.innerText || el.textContent).toLocaleLowerCase();
-    return wanted.includes(own);
+    const own = key(el.innerText || el.textContent);
+    return wanted.some(label => own === label || (
+      own.startsWith(label) && own.length <= label.length + 16
+    ));
+  }).sort((a, b) => {
+    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+    return ar.width * ar.height - br.width * br.height;
   });
   let closedMatch = '';
   for (const name of names) {
@@ -3452,6 +3446,14 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
 
     search_terms = []
     for label in labels:
+        readable = re.sub(r"\s+", " ", label).strip()
+        if readable and readable not in search_terms:
+            search_terms.append(readable)
+        readable_base = re.sub(
+            r"\s*\(?OTC\)?\s*$", "", readable, flags=re.IGNORECASE
+        ).strip()
+        if readable_base and readable_base not in search_terms:
+            search_terms.append(readable_base)
         compact = re.sub(r"[^A-Za-z0-9]", "", label).upper()
         if compact and compact not in search_terms:
             search_terms.append(compact)
@@ -3480,8 +3482,6 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
             with state_lock:
                 if state.get("active_pair") == pair:
                     return True, ""
-            if _pair_has_recent_market_data(pair):
-                return True, ""
         return False, f"{pair} seçildi, amma canlı məlumat axını təsdiqlənmədi"
 
     try:
