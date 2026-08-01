@@ -3210,26 +3210,55 @@ def _execute_platform_demo_order(page, order: dict) -> None:
         )
         return
 
-    duration = _first_visible(
-        page.get_by_text(re.compile(r"^1\s*dak\.?$", re.IGNORECASE))
+    duration_patterns = (
+        r"^1\s*dak(?:ika)?\.?$",
+        r"^1\s*min(?:ute)?s?\.?$",
+        r"^60\s*(?:sec(?:ond)?s?|saniye)\.?$",
+        r"^00:01:00$",
+        r"^01:00$",
     )
-    if duration is None:
-        _mark_platform_order(order, "BLOCKED", "1 dəqiqəlik müddət təsdiqlənmədi")
-        return
-
-    button_name = "Yukarı" if order["direction"] == "AL" else "Aşağı"
-    button = _first_visible(
-        page.get_by_role("button", name=button_name, exact=True)
-    )
-    if button is None:
-        button = _first_visible(
-            page.locator(f'button:has-text("{button_name}")')
+    duration = None
+    for pattern in duration_patterns:
+        duration = _first_visible(
+            page.get_by_text(re.compile(pattern, re.IGNORECASE))
         )
-    if button is None or not button.is_enabled():
+        if duration is not None:
+            break
+    if duration is None:
         _mark_platform_order(
             order,
             "BLOCKED",
-            f"{button_name} düyməsi tapılmadı və ya aktiv deyil",
+            "1 dəqiqəlik müddət UI-də tapılmadı",
+        )
+        return
+
+    button_names = (
+        ("Yukarı", "Yuxarı", "Up", "Higher", "Call", "Выше")
+        if order["direction"] == "AL"
+        else ("Aşağı", "Asagi", "Down", "Lower", "Put", "Ниже")
+    )
+    button = None
+    button_name = button_names[0]
+
+    for candidate_name in button_names:
+        candidate = _first_visible(
+            page.get_by_role("button", name=candidate_name, exact=True)
+        )
+        if candidate is None:
+            candidate = _first_visible(
+                page.locator(f'button:has-text("{candidate_name}")')
+            )
+        if candidate is not None and candidate.is_enabled():
+            button = candidate
+            button_name = candidate_name
+            break
+
+    if button is None:
+        _mark_platform_order(
+            order,
+            "BLOCKED",
+            "Demo istiqamət düyməsi tapılmadı: "
+            + ", ".join(button_names),
         )
         return
 
