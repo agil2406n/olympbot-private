@@ -3244,6 +3244,26 @@ def _find_platform_pair_tab(page, pair: str):
     return None
 
 
+def _pair_has_recent_market_data(pair: str, max_age: float = 180.0) -> bool:
+    """Accept tick or minute-OHLC feeds that may not update immediately after a tab click."""
+    with candles_lock:
+        latest = dict(live_prices.get(pair, {}))
+        history = list(candles.get(pair, ()))
+    timestamps = []
+    try:
+        timestamps.append(float(latest.get("ts") or 0))
+    except (TypeError, ValueError):
+        pass
+    if history:
+        try:
+            last_bucket = float(history[-1].get("bucket") or 0)
+            timestamps.append(last_bucket + CANDLE_INTERVAL_SEC)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    newest = max(timestamps, default=0.0)
+    return newest > 0 and time.time() - newest <= max_age
+
+
 ASSET_PICKER_OPENER_DOM_SCRIPT = r"""
 () => {
   const visible = el => {
@@ -3482,6 +3502,8 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
             with state_lock:
                 if state.get("active_pair") == pair:
                     return True, ""
+            if _pair_has_recent_market_data(pair):
+                return True, ""
         return False, f"{pair} seçildi, amma canlı məlumat axını təsdiqlənmədi"
 
     try:
