@@ -1924,6 +1924,25 @@ def _submit_confirmed_signal(signal_data: dict) -> None:
             reason="1 dəqiqəlik siqnalın giriş vaxtı bitib",
         )
         return
+    # Platform əmri yaradılmamışdan əvvəl aktivin OlympTrade-də həqiqətən açıq
+    # olduğunu yoxla. Əks halda qısa müddətli PENDING mövqeyi başqa etibarlı
+    # siqnalı "eyni anda bir əməliyyat" qaydası ilə səhvən bloklaya bilər.
+    with state_lock:
+        active_pair = state.get("active_pair")
+    with scanner_lock:
+        available_pairs = set(scanner_state.get("available_pairs", ()))
+    if pair != active_pair and pair not in available_pairs:
+        _event(
+            "signal_rejected",
+            pair=pair,
+            direction=signal_data["direction"],
+            score=signal_data.get("score"),
+            reason=(
+                f"{pair} OlympTrade-də açıq aktiv tabı deyil; "
+                "Demo əmri yaradılmadı"
+            ),
+        )
+        return
     with candles_lock:
         latest = live_prices.get(pair, {})
     entry_price = float(latest.get("price", signal_data["entry_price"]))
