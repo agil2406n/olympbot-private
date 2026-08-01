@@ -88,12 +88,12 @@ SIGNAL_COOLDOWN_CANDLES = max(
 SIGNAL_SCORE_THRESHOLD = min(
     95, max(60, int(os.environ.get("SIGNAL_SCORE_THRESHOLD", "75")))
 )
-DEMO_LEARNING_MODE = _env_bool("DEMO_LEARNING_MODE", False)
+DEMO_LEARNING_MODE = _env_bool("DEMO_LEARNING_MODE", True)
 DEMO_LEARNING_MIN_SCORE = min(
     100,
     max(
         SIGNAL_SCORE_THRESHOLD,
-        int(os.environ.get("DEMO_LEARNING_MIN_SCORE", "90")),
+        int(os.environ.get("DEMO_LEARNING_MIN_SCORE", "80")),
     ),
 )
 SCAN_ROTATION_ENABLED = _env_bool("SCAN_ROTATION_ENABLED", True)
@@ -570,6 +570,14 @@ class DemoTradingEngine:
             return False, "Yanlış istiqamət"
         now = time.time()
         with self.lock:
+            # Müddəti bitmiş Demo mövqeyi yeni siqnalları daimi bloklamasın.
+            stale_cutoff = now - 45
+            self.open_positions = [
+                position
+                for position in self.open_positions
+                if float(position.expiry_ts) >= stale_cutoff
+            ]
+
             if self.last_signal_buckets.get(pair) == candle_bucket:
                 return False, "Eyni şam siqnalı"
             self.last_signal_buckets[pair] = candle_bucket
