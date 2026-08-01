@@ -3123,7 +3123,20 @@ TRADE_DURATION_DOM_SCRIPT = r"""
         .filter(item => /\d/.test(item.text) && item.text.length <= 24);
       const valueNode = valueNodes.sort((a, b) => a.text.length - b.text.length)[0];
       if (!valueNode) continue;
+      const describe = el => norm([
+        el.innerText, el.textContent, el.getAttribute('aria-label'),
+        el.getAttribute('title'), el.getAttribute('data-test')
+      ].filter(Boolean).join(' '));
+      const ordered = controls.slice().sort(
+        (a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left
+      );
+      const minus = controls.find(el => /(^|\s)(-|−|minus|azalt)(\s|$)/i.test(describe(el)))
+        || ordered[0];
+      const plus = controls.find(el => /(^|\s)(\+|＋|plus|artır|artir)(\s|$)/i.test(describe(el)))
+        || ordered[ordered.length - 1];
       if (action === 'open') valueNode.el.click();
+      if (action === 'minus' && minus) minus.click();
+      if (action === 'plus' && plus) plus.click();
       return {ok: true, text: valueNode.text};
     }
   }
@@ -3227,7 +3240,31 @@ def _set_platform_trade_duration(page) -> tuple[bool, str]:
         page.keyboard.press("Escape")
     except Exception:
         pass
-    return False, "Süre menyusunda 1 dəqiqə seçimi tapılmadı"
+
+    # Some OlympTrade layouts expose duration only through −/+ controls.
+    # Reduce the value until the exact one-minute state is visible.
+    previous_text = ""
+    unchanged = 0
+    for _ in range(240):
+        current = _trade_duration_control(page)
+        current_text = str(current.get("text") or "")
+        if current.get("ok") and _is_one_minute_duration(current_text):
+            return True, ""
+        if not current.get("ok"):
+            break
+        clicked = _trade_duration_control(page, "minus")
+        if not clicked.get("ok"):
+            break
+        page.wait_for_timeout(50)
+        if current_text == previous_text:
+            unchanged += 1
+            if unchanged >= 5:
+                break
+        else:
+            unchanged = 0
+        previous_text = current_text
+
+    return False, "Süre idarəsində 1 dəqiqə qurula bilmədi"
 
 
 def _find_platform_pair_tab(page, pair: str):
