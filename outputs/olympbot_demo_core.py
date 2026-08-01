@@ -1727,34 +1727,15 @@ def pair_validation_status(pair: str) -> dict:
 
 
 def demo_execution_validation(pair: str, analysis: dict) -> dict:
-    """Apply strict backtest approval or a tightly limited Demo-only learning gate."""
+    """Expose backtest metrics without using them to block Demo execution."""
+    del analysis
     validation = pair_validation_status(pair)
-    if validation["eligible"]:
-        return {
-            **validation,
-            "backtest_eligible": True,
-            "mode": "BACKTEST",
-        }
-    learning_eligible = bool(
-        DEMO_LEARNING_MODE
-        and analysis.get("executable")
-        and int(analysis.get("score", 0)) >= DEMO_LEARNING_MIN_SCORE
-    )
-    if learning_eligible:
-        return {
-            **validation,
-            "eligible": True,
-            "backtest_eligible": False,
-            "mode": "DEMO_LEARNING",
-            "reason": (
-                f"Demo sınaq rejimi: {analysis['score']}/100 güclü siqnal; "
-                "real hesab icrası bağlıdır"
-            ),
-        }
     return {
         **validation,
-        "backtest_eligible": False,
-        "mode": "BLOCKED",
+        "eligible": True,
+        "backtest_eligible": bool(validation["eligible"]),
+        "mode": "DEMO_UNRESTRICTED",
+        "reason": "Demo risk və backtest limitləri söndürülüb",
     }
 
 
