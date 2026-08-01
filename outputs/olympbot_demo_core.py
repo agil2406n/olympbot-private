@@ -3140,6 +3140,7 @@ def _is_one_minute_duration(value: str) -> bool:
         r"^0*1\s*(?:m|min(?:ute)?s?)$",
         r"^0*60\s*(?:s|sec(?:ond)?s?|san(?:iye)?)$",
         r"^(?:00:)?0?1:00$",
+        r"^00:01:00$",
         r"^00:01$",
     )
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
@@ -3159,7 +3160,7 @@ def _set_platform_trade_duration(page) -> tuple[bool, str]:
 
     option_pattern = re.compile(
         r"^\s*(?:1\s*(?:dk|dakika|dəqiqə|deqiqe|d|min(?:ute)?)|"
-        r"60\s*(?:s|sec(?:ond)?s?|saniye)|00:01|01:00)\s*$",
+        r"60\s*(?:s|sec(?:ond)?s?|saniye)|00:01|01:00|00:01:00)\s*$",
         re.IGNORECASE,
     )
     options = page.get_by_text(option_pattern)
@@ -3177,6 +3178,44 @@ def _set_platform_trade_duration(page) -> tuple[bool, str]:
                 return True, ""
         except Exception:
             continue
+
+    # OlympTrade sometimes renders duration choices as nested div/span nodes
+    # instead of Playwright text options. Click the smallest visible matching
+    # node so a parent container containing several durations is never chosen.
+    try:
+        fallback = page.evaluate(
+            r"""
+            () => {
+              const visible = el => {
+                const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && rect.width > 0 && rect.height > 0;
+              };
+              const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+              const oneMinute = text => /^(?:0*1\s*(?:dk|dakika|dəqiqə|deqiqe|d|min(?:ute)?s?)|0*60\s*(?:s|sec(?:ond)?s?|saniye)|00:01|01:00|00:01:00)$/i.test(text);
+              const candidates = [...document.querySelectorAll(
+                'button,[role="button"],[role="option"],[role="menuitem"],li,div,span'
+              )].filter(visible).map(el => ({
+                el,
+                text: norm(el.innerText || el.textContent || el.getAttribute('aria-label')),
+                area: el.getBoundingClientRect().width * el.getBoundingClientRect().height,
+              })).filter(item => oneMinute(item.text))
+                .sort((a, b) => a.area - b.area);
+              if (!candidates.length) return {ok: false, seen: []};
+              candidates[0].el.click();
+              return {ok: true, text: candidates[0].text};
+            }
+            """
+        )
+        if isinstance(fallback, dict) and fallback.get("ok"):
+            page.wait_for_timeout(350)
+            verified = _trade_duration_control(page)
+            if verified.get("ok") and _is_one_minute_duration(
+                str(verified.get("text") or "")
+            ):
+                return True, ""
+    except Exception:
+        pass
     try:
         page.keyboard.press("Escape")
     except Exception:
