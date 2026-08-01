@@ -3289,38 +3289,43 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
     if not labels:
         return False, f"{pair} üçün OlympTrade aktiv adı konfiqurasiya edilməyib"
 
+    # OlympTrade-in cari interfeysində aktiv panelinin sabit selektoru budur.
+    # Ümumi semantik axtarış yalnız köhnə/fərqli UI versiyaları üçün fallback-dir.
+    opener = _first_visible(
+        page.locator('[data-test="assets-tabs-add-button"]')
+    )
     opener_pattern = re.compile(
         r"(add\s*(?:an?\s*)?asset|select\s*asset|asset\s*search|"
         r"varl[ıi]k\s*(?:ekle|seç)|aktiv\s*(?:əlavə|seç)|instrument|market)",
         re.IGNORECASE,
     )
-    opener = None
-    candidates = page.locator(
-        'button,[role="button"],[data-test*="asset" i],'
-        '[data-testid*="asset" i],[aria-label],[title]'
-    )
-    for index in range(min(candidates.count(), 1200)):
-        candidate = candidates.nth(index)
-        try:
-            if not candidate.is_visible() or not candidate.is_enabled():
-                continue
-            description = " ".join(
-                filter(
-                    None,
-                    (
-                        candidate.get_attribute("aria-label"),
-                        candidate.get_attribute("title"),
-                        candidate.get_attribute("data-test"),
-                        candidate.get_attribute("data-testid"),
-                        candidate.inner_text(timeout=150),
-                    ),
+    if opener is None:
+        candidates = page.locator(
+            'button,[role="button"],[data-test*="asset" i],'
+            '[data-testid*="asset" i],[aria-label],[title]'
+        )
+        for index in range(min(candidates.count(), 1200)):
+            candidate = candidates.nth(index)
+            try:
+                if not candidate.is_visible() or not candidate.is_enabled():
+                    continue
+                description = " ".join(
+                    filter(
+                        None,
+                        (
+                            candidate.get_attribute("aria-label"),
+                            candidate.get_attribute("title"),
+                            candidate.get_attribute("data-test"),
+                            candidate.get_attribute("data-testid"),
+                            candidate.inner_text(timeout=150),
+                        ),
+                    )
                 )
-            )
-            if opener_pattern.search(description):
-                opener = candidate
-                break
-        except Exception:
-            continue
+                if opener_pattern.search(description):
+                    opener = candidate
+                    break
+            except Exception:
+                continue
     try:
         if opener is not None:
             opener.click(timeout=3000)
@@ -3336,26 +3341,39 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
         r"(search|find|ara|axtar|asset|instrument|varl[ıi]k|aktiv)",
         re.IGNORECASE,
     )
-    search_box = None
-    inputs = page.locator('input:visible,[role="searchbox"]:visible')
-    for index in range(min(inputs.count(), 100)):
-        candidate = inputs.nth(index)
-        try:
-            description = " ".join(
-                filter(
-                    None,
-                    (
-                        candidate.get_attribute("placeholder"),
-                        candidate.get_attribute("aria-label"),
-                        candidate.get_attribute("title"),
-                    ),
-                )
+    search_box = _first_visible(
+        page.get_by_role(
+            "textbox",
+            name=re.compile(r"^(Ara|Search|Axtar)$", re.IGNORECASE),
+        )
+    )
+    if search_box is None:
+        search_box = _first_visible(
+            page.locator(
+                '[role="menu"] input, [role="menu"] [role="searchbox"], '
+                'input[placeholder="Ara" i], input[placeholder="Search" i]'
             )
-            if search_pattern.search(description):
-                search_box = candidate
-                break
-        except Exception:
-            continue
+        )
+    inputs = page.locator('input:visible,[role="searchbox"]:visible')
+    if search_box is None:
+        for index in range(min(inputs.count(), 100)):
+            candidate = inputs.nth(index)
+            try:
+                description = " ".join(
+                    filter(
+                        None,
+                        (
+                            candidate.get_attribute("placeholder"),
+                            candidate.get_attribute("aria-label"),
+                            candidate.get_attribute("title"),
+                        ),
+                    )
+                )
+                if search_pattern.search(description):
+                    search_box = candidate
+                    break
+            except Exception:
+                continue
     if search_box is None and inputs.count() == 1:
         search_box = inputs.first
     if search_box is None:
