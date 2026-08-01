@@ -110,28 +110,21 @@ AI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6").strip() or "gpt-5.6"
 AI_MIN_CONFIDENCE = _env_float("AI_MIN_CONFIDENCE", 0.65)
 AI_TIMEOUT_SEC = _env_float("AI_TIMEOUT_SEC", 20.0)
 
-# Gold qəsdən daxil edilməyib. Hər sətirdə birinci tapılan və kifayət qədər
-# şamı olan kod həmin aktivin analiz axını kimi istifadə edilir.
+# Platformda yalnız bu üç OTC aktiv istifadə edilir. Normal bazarlar
+# fallback deyil və səhv aktivə keçidin qarşısı alınır.
 WATCH_ASSETS = (
     {
+        "name": "Ethereum OTC",
+        "pairs": ("ETHUSD_OTC",),
+    },
+    {
+        # OlympTrade UI-də BNB OTC-dir, canlı axın kodu BNBUSD gəlir.
         "name": "BNB OTC",
-        "pairs": ("BNBUSD_OTC", "BNBUSD"),
+        "pairs": ("BNBUSD",),
     },
     {
-        "name": "EUR/USD",
-        "pairs": ("EURUSD_OTC", "EURUSD"),
-    },
-    {
-        "name": "Bitcoin",
-        "pairs": ("BTCUSD_OTC", "BTCUSD"),
-    },
-    {
-        "name": "Ethereum",
-        "pairs": ("ETHUSD_OTC", "ETHUSD"),
-    },
-    {
-        "name": "AUD/CAD",
-        "pairs": ("AUDCAD_OTC", "AUDCAD"),
+        "name": "Bitcoin OTC",
+        "pairs": ("BTCUSD_OTC",),
     },
 )
 WATCH_PAIR_LABELS = {
