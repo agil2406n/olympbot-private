@@ -410,7 +410,7 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div id="events" class="events"><div class="empty" style="position:relative;height:220px">Siqnal hələ yaranmayıb</div></div>
       </div>
       <div class="card">
-        <div class="card-head"><div><div class="card-title">Risk nəzarəti</div><div class="card-note">Cari ticarət mühərriki</div></div></div>
+        <div class="card-head"><div><div class="card-title">Demo icra statusu</div><div class="card-note">Demo risk limitləri söndürülüb</div></div></div>
         <div class="risk">
           <div class="risk-row"><span class="risk-key">Açıq demo əməliyyatları</span><strong id="awaiting">0</strong></div>
           <div class="risk-row"><span class="risk-key">OlympTrade hesabı</span><strong id="platformAccount">Təsdiqlənməyib</strong></div>
@@ -421,7 +421,7 @@ DASHBOARD_HTML = r"""<!doctype html>
           <div class="risk-row"><span class="risk-key">OpenAI təsdiqi</span><strong id="aiStatus">—</strong></div>
           <div class="risk-row"><span class="risk-key">AI modeli</span><strong id="aiModel">—</strong></div>
           <div class="risk-row"><span class="risk-key">Son AI qərarı</span><strong id="aiDecision">—</strong></div>
-          <div class="risk-row"><span class="risk-key">Risk mühərriki</span><strong id="riskStatus">AKTİV</strong></div>
+          <div class="risk-row"><span class="risk-key">Demo rejimi</span><strong id="riskStatus">LİMİTSİZ DEMO</strong></div>
           <div class="risk-row"><span class="risk-key">Bugünkü P&amp;L</span><strong id="dailyPnl">+0.00</strong></div>
           <div class="risk-row"><span class="risk-key">Bugünkü əməliyyatlar</span><strong id="dailyTrades">0 / 20</strong></div>
           <div class="risk-row"><span class="risk-key">Ardıcıl zərərlər</span><strong id="consecutiveLosses">0 / 3</strong></div>
@@ -1051,7 +1051,11 @@ def _read_signal_history(limit: int = 100) -> list[dict]:
 
 
 def dashboard():
-    return DASHBOARD_HTML
+    return Response(
+        DASHBOARD_HTML,
+        mimetype="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def dashboard_api():

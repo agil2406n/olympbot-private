@@ -3292,11 +3292,12 @@ def _execute_platform_demo_order(page, order: dict) -> None:
         return
 
     duration_patterns = (
-        r"(?:^|\s)1\s*dak(?:ika)?\.?(?:\s|$)",
-        r"(?:^|\s)1\s*min(?:ute)?s?\.?(?:\s|$)",
-        r"(?:^|\s)60\s*(?:sec(?:ond)?s?|saniye)\.?(?:\s|$)",
-        r"(?:^|\s)00:01:00(?:\s|$)",
-        r"(?:^|\s)01:00(?:\s|$)",
+        r"(?:^|\W)1\s*(?:dk|dak(?:ika)?|dəq(?:iqə)?|deq(?:iqe)?)(?:\W|$)",
+        r"(?:^|\W)1\s*(?:m|min(?:ute)?s?)(?:\W|$)",
+        r"(?:^|\W)60\s*(?:s|sec(?:ond)?s?|san(?:iye)?)(?:\W|$)",
+        r"(?:^|\W)00:01:00(?:\W|$)",
+        r"(?:^|\W)0?1:00(?:\W|$)",
+        r"(?:^|\W)00:01(?:\W|$)",
     )
     duration_found = False
     duration_locator = page.locator(
@@ -3315,6 +3316,8 @@ def _execute_platform_demo_order(page, order: dict) -> None:
                         candidate.get_attribute("value"),
                         candidate.get_attribute("aria-label"),
                         candidate.get_attribute("title"),
+                        candidate.get_attribute("data-value"),
+                        candidate.get_attribute("data-duration"),
                         candidate.inner_text(timeout=200),
                     ),
                 )
