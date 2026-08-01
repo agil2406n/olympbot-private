@@ -1924,25 +1924,6 @@ def _submit_confirmed_signal(signal_data: dict) -> None:
             reason="1 dəqiqəlik siqnalın giriş vaxtı bitib",
         )
         return
-    # Platform əmri yaradılmamışdan əvvəl aktivin OlympTrade-də həqiqətən açıq
-    # olduğunu yoxla. Əks halda qısa müddətli PENDING mövqeyi başqa etibarlı
-    # siqnalı "eyni anda bir əməliyyat" qaydası ilə səhvən bloklaya bilər.
-    with state_lock:
-        active_pair = state.get("active_pair")
-    with scanner_lock:
-        available_pairs = set(scanner_state.get("available_pairs", ()))
-    if pair != active_pair and pair not in available_pairs:
-        _event(
-            "signal_rejected",
-            pair=pair,
-            direction=signal_data["direction"],
-            score=signal_data.get("score"),
-            reason=(
-                f"{pair} OlympTrade-də açıq aktiv tabı deyil; "
-                "Demo əmri yaradılmadı"
-            ),
-        )
-        return
     with candles_lock:
         latest = live_prices.get(pair, {})
     entry_price = float(latest.get("price", signal_data["entry_price"]))
@@ -3137,6 +3118,118 @@ def _find_platform_pair_tab(page, pair: str):
     return None
 
 
+def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
+    """Open an asset from OlympTrade's picker without user interaction."""
+    labels = WATCH_PAIR_LABELS.get(pair, ())
+    if not labels:
+        return False, f"{pair} üçün OlympTrade aktiv adı konfiqurasiya edilməyib"
+
+    opener_pattern = re.compile(
+        r"(add\s*(?:an?\s*)?asset|select\s*asset|asset\s*search|"
+        r"varl[ıi]k\s*(?:ekle|seç)|aktiv\s*(?:əlavə|seç)|instrument|market)",
+        re.IGNORECASE,
+    )
+    opener = None
+    candidates = page.locator(
+        'button,[role="button"],[data-test*="asset" i],'
+        '[data-testid*="asset" i],[aria-label],[title]'
+    )
+    for index in range(min(candidates.count(), 1200)):
+        candidate = candidates.nth(index)
+        try:
+            if not candidate.is_visible() or not candidate.is_enabled():
+                continue
+            description = " ".join(
+                filter(
+                    None,
+                    (
+                        candidate.get_attribute("aria-label"),
+                        candidate.get_attribute("title"),
+                        candidate.get_attribute("data-test"),
+                        candidate.get_attribute("data-testid"),
+                        candidate.inner_text(timeout=150),
+                    ),
+                )
+            )
+            if opener_pattern.search(description):
+                opener = candidate
+                break
+        except Exception:
+            continue
+    if opener is None:
+        return False, "OlympTrade aktiv seçici düyməsi tapılmadı"
+
+    try:
+        opener.click(timeout=3000)
+        page.wait_for_timeout(400)
+    except Exception as exc:
+        return False, f"OlympTrade aktiv seçicisi açıla bilmədi: {exc}"
+
+    search_pattern = re.compile(
+        r"(search|find|ara|axtar|asset|instrument|varl[ıi]k|aktiv)",
+        re.IGNORECASE,
+    )
+    search_box = None
+    inputs = page.locator('input:visible,[role="searchbox"]:visible')
+    for index in range(min(inputs.count(), 100)):
+        candidate = inputs.nth(index)
+        try:
+            description = " ".join(
+                filter(
+                    None,
+                    (
+                        candidate.get_attribute("placeholder"),
+                        candidate.get_attribute("aria-label"),
+                        candidate.get_attribute("title"),
+                    ),
+                )
+            )
+            if search_pattern.search(description):
+                search_box = candidate
+                break
+        except Exception:
+            continue
+    if search_box is None and inputs.count() == 1:
+        search_box = inputs.first
+    if search_box is None:
+        return False, "OlympTrade aktiv axtarış sahəsi tapılmadı"
+
+    search_terms = []
+    for label in labels:
+        compact = re.sub(r"[^A-Za-z0-9]", "", label).upper()
+        if compact and compact not in search_terms:
+            search_terms.append(compact)
+        base = re.sub(r"(?:USD|OTC)$", "", compact)
+        if base and base not in search_terms:
+            search_terms.append(base)
+
+    for term in search_terms:
+        try:
+            search_box.fill(term, timeout=2000)
+            page.wait_for_timeout(350)
+        except Exception:
+            continue
+        target = _find_platform_pair_tab(page, pair)
+        if target is None:
+            continue
+        try:
+            target.click(timeout=3000)
+        except Exception:
+            continue
+        for _ in range(28):
+            page.wait_for_timeout(250)
+            with state_lock:
+                if state.get("active_pair") == pair:
+                    return True, ""
+        return False, f"{pair} seçildi, amma canlı məlumat axını təsdiqlənmədi"
+
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return False, f"{pair} OlympTrade aktiv siyahısında tapılmadı"
+
+
 def _select_platform_pair(page, pair: str) -> tuple[bool, str]:
     """Select the exact signal asset before any Demo trade button is clicked."""
     with state_lock:
@@ -3146,10 +3239,7 @@ def _select_platform_pair(page, pair: str) -> tuple[bool, str]:
 
     target = _find_platform_pair_tab(page, pair)
     if target is None:
-        return (
-            False,
-            f"{pair} OlympTrade aktiv tablarında tapılmadı; yanlış aktivdə klik bloklandı",
-        )
+        return _open_platform_pair(page, pair)
     try:
         target.click(timeout=3000)
     except Exception as exc:
@@ -3187,13 +3277,10 @@ def _rotate_market_scanner(page, now: float) -> None:
         return
     with state_lock:
         current_pair = state.get("active_pair")
-    available_pairs = []
+    # Server brauzeri aktivləri OlympTrade seçicisindən özü aça bildiyi üçün
+    # skaner bütün konfiqurasiya edilmiş aktivləri növbə ilə yoxlayır.
+    available_pairs = list(configured_pairs)
     unavailable_pairs = []
-    for pair in configured_pairs:
-        if pair == current_pair or _find_platform_pair_tab(page, pair) is not None:
-            available_pairs.append(pair)
-        else:
-            unavailable_pairs.append(pair)
     with scanner_lock:
         scanner_state["available_pairs"] = available_pairs
         scanner_state["unavailable_pairs"] = unavailable_pairs
