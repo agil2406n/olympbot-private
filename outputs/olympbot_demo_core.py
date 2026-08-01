@@ -56,6 +56,7 @@ PAYOUT_RATE = _env_float("DEMO_PAYOUT_RATE", 0.90)
 TRADE_DURATION_SEC = int(os.environ.get("TRADE_DURATION_SEC", "60"))
 COOLDOWN_SEC = int(os.environ.get("COOLDOWN_SEC", "60"))
 MARTINGALE_ENABLED = False
+DEMO_RISK_LIMITS_ENABLED = _env_bool("DEMO_RISK_LIMITS_ENABLED", False)
 MAX_DAILY_LOSS = max(1.0, _env_float("MAX_DAILY_LOSS", 5.0))
 MAX_DAILY_TRADES = max(1, int(os.environ.get("MAX_DAILY_TRADES", "5")))
 MAX_CONSECUTIVE_LOSSES = max(
@@ -606,7 +607,11 @@ class DemoTradingEngine:
             risk = self.risk_status()
             if not reason and risk["halted"]:
                 reason = str(risk["reason"])
-            elif not reason and amount > float(risk["max_stake"]):
+            elif (
+                not reason
+                and risk["limits_enabled"]
+                and amount > float(risk["max_stake"])
+            ):
                 reason = (
                     f"Risk limiti: məbləğ {risk['max_stake']:.2f}-dən "
                     "çox ola bilməz"
@@ -809,28 +814,42 @@ class DemoTradingEngine:
             2,
         )
         reason = ""
-        if daily_pnl <= -MAX_DAILY_LOSS:
-            reason = f"Günlük zərər limiti dolub ({daily_pnl:+.2f})"
-        elif len(today) >= MAX_DAILY_TRADES:
-            reason = f"Günlük əməliyyat limiti dolub ({len(today)})"
-        elif consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-            reason = (
-                "Ardıcıl zərər limiti dolub "
-                f"({consecutive_losses})"
-            )
+        if DEMO_RISK_LIMITS_ENABLED:
+            if daily_pnl <= -MAX_DAILY_LOSS:
+                reason = f"Günlük zərər limiti dolub ({daily_pnl:+.2f})"
+            elif len(today) >= MAX_DAILY_TRADES:
+                reason = f"Günlük əməliyyat limiti dolub ({len(today)})"
+            elif consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                reason = (
+                    "Ardıcıl zərər limiti dolub "
+                    f"({consecutive_losses})"
+                )
         return {
             "halted": bool(reason),
             "reason": reason,
+            "limits_enabled": DEMO_RISK_LIMITS_ENABLED,
             "daily_pnl": daily_pnl,
             "daily_trades": len(today),
             "consecutive_losses": consecutive_losses,
-            "max_stake": max_stake,
+            "max_stake": (
+                max_stake if DEMO_RISK_LIMITS_ENABLED else reference_balance
+            ),
             "martingale_enabled": False,
             "limits": {
-                "max_daily_loss": MAX_DAILY_LOSS,
-                "max_daily_trades": MAX_DAILY_TRADES,
-                "max_consecutive_losses": MAX_CONSECUTIVE_LOSSES,
-                "max_stake_percent": MAX_STAKE_PERCENT,
+                "max_daily_loss": (
+                    MAX_DAILY_LOSS if DEMO_RISK_LIMITS_ENABLED else None
+                ),
+                "max_daily_trades": (
+                    MAX_DAILY_TRADES if DEMO_RISK_LIMITS_ENABLED else None
+                ),
+                "max_consecutive_losses": (
+                    MAX_CONSECUTIVE_LOSSES
+                    if DEMO_RISK_LIMITS_ENABLED
+                    else None
+                ),
+                "max_stake_percent": (
+                    MAX_STAKE_PERCENT if DEMO_RISK_LIMITS_ENABLED else None
+                ),
             },
             "day_start_utc": day_start,
         }

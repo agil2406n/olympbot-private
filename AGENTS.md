@@ -23,8 +23,9 @@
 - Strategy timeframe and trade duration are 60 seconds.
 - Server Demo learning mode requires a fully executable signal with score 90+
   while strict backtest validation continues to be calculated.
-- Server risk limits: stake 1, maximum 5 Demo trades per UTC day, maximum daily
-  loss 5, and stop after 3 consecutive losses.
+- OlympTrade Demo execution has no daily trade, daily loss, consecutive-loss,
+  or stake-percentage halt. Available Demo balance and one-open-trade-at-a-time
+  checks still apply.
 - The scanner must rotate only through asset tabs that are actually open in
   OlympTrade. Gold must not be added.
 - Phone access uses private Tailscale Serve; do not enable a public Funnel.
@@ -35,7 +36,7 @@
 2. Verify the dashboard API returns HTTP 200 repeatedly without increasing the
    process file-descriptor count.
 3. Verify the platform reports `demo_verified=true`, `execution_enabled=true`,
-   visible amount `1`, and one-minute duration before claiming readiness.
+   a positive visible amount, and one-minute duration before claiming readiness.
 4. A signal card is not proof of execution. Use the event chain
    `demo_signal` -> `demo_trade_opened` -> `platform_demo_clicked` or
    `platform_demo_blocked`, followed by settlement.

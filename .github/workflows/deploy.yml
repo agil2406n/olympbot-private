@@ -119,7 +119,7 @@ jobs:
           healthy=false
           for _ in $(seq 1 36); do
             if curl -fsS --max-time 5 http://127.0.0.1:5000/api/dashboard \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["state"]["connected"]; p=d["trading"]["platform_demo"]; assert p["demo_verified"] and p["execution_enabled"] and float(p["visible_trade_amount"]) == 1.0' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["state"]["connected"]; p=d["trading"]["platform_demo"]; assert p["demo_verified"] and p["execution_enabled"] and float(p["visible_trade_amount"]) >= 1.0' \
               2>/dev/null; then
               healthy=true
               break

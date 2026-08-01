@@ -92,8 +92,10 @@ Bot hər tamamlanmış şam üçün çoxfaktorlu bal hesablayır:
 Server paketində əlavə nəzarətli `DEMO_LEARNING_MODE` mövcuddur. Bu rejim yalnız
 OlympTrade Deneme hesabı hər klikdən əvvəl təsdiqləndikdə, strategiya siqnalı bütün
 giriş filtrlərini keçdikdə və bal ən azı `DEMO_LEARNING_MIN_SCORE=90` olduqda işləyir.
-Server xidməti gündə maksimum `5` Demo əməliyyatı və `5` vahid maksimum günlük zərər
-ilə qurulub. Real hesab qoruması və martinqeyl qadağası bu rejimdə də dəyişmir.
+Server xidməti OlympTrade Demo rejimində günlük əməliyyat, günlük zərər,
+ardıcıl zərər və stake-faiz dayandırma limitlərindən istifadə etmir. Mövcud Demo
+balansı və eyni anda yalnız bir açıq əməliyyat yoxlamaları qalır. Real hesab
+qoruması və martinqeyl qadağası bu rejimdə də dəyişmir.
 
 Aktiv skaneri yalnız OlympTrade-də həqiqətən açıq olan tablar arasında keçir. Paneldə
 `Skan` düyməsinin üzərində açıq aktiv sayı, üzərinə toxunduqda isə mövcud və açıq

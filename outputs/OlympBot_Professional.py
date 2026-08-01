@@ -534,7 +534,9 @@ DASHBOARD_HTML = r"""<!doctype html>
         ? `${aiLast.approved ? 'TƏSDİQ' : 'RƏDD'} · ${aiLast.pair} · ${Math.round(Number(aiLast.confidence || 0) * 100)}%`
         : '—';
       const risk = trading.risk || {}, limits = risk.limits || {};
-      $('riskStatus').textContent = risk.halted ? `DAYANDIRILIB · ${risk.reason}` : 'AKTİV';
+      $('riskStatus').textContent = risk.halted
+        ? `DAYANDIRILIB · ${risk.reason}`
+        : risk.limits_enabled === false ? 'LİMİTSİZ DEMO' : 'AKTİV';
       $('riskStatus').style.color = risk.halted ? 'var(--red)' : 'var(--green)';
       $('dailyPnl').textContent = `${Number(risk.daily_pnl || 0) >= 0 ? '+' : ''}${Number(risk.daily_pnl || 0).toFixed(2)}`;
       $('dailyPnl').style.color = Number(risk.daily_pnl || 0) < 0 ? 'var(--red)' : 'var(--green)';

@@ -9,8 +9,8 @@ privately through Tailscale.
 - Real-account execution is hard-disabled.
 - Every platform click requires a visible OlympTrade Deneme/Demo account check.
 - Martingale is disabled.
-- The server uses stake `1`, a maximum of 5 Demo trades per UTC day, a maximum
-  daily loss of 5, and stops after 3 consecutive losses.
+- OlympTrade Demo execution has no daily-trade, daily-loss, consecutive-loss,
+  or stake-percentage halt. Balance and one-open-trade-at-a-time checks remain.
 - Historical and Demo results are not guarantees of future performance.
 
 ## Main files

@@ -16,8 +16,7 @@ Environment=PANEL_PORT=5000
 Environment=PLATFORM_DEMO_EXECUTION=true
 Environment=DEMO_LEARNING_MODE=true
 Environment=DEMO_LEARNING_MIN_SCORE=90
-Environment=MAX_DAILY_TRADES=5
-Environment=MAX_DAILY_LOSS=5
+Environment=DEMO_RISK_LIMITS_ENABLED=false
 Environment=AI_CONFIRMATION_ENABLED=false
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONUTF8=1
