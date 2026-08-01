@@ -56,8 +56,8 @@ PAYOUT_RATE = _env_float("DEMO_PAYOUT_RATE", 0.90)
 TRADE_DURATION_SEC = int(os.environ.get("TRADE_DURATION_SEC", "60"))
 COOLDOWN_SEC = int(os.environ.get("COOLDOWN_SEC", "60"))
 MARTINGALE_ENABLED = False
-MAX_DAILY_LOSS = max(1.0, _env_float("MAX_DAILY_LOSS", 100.0))
-MAX_DAILY_TRADES = max(1, int(os.environ.get("MAX_DAILY_TRADES", "20")))
+MAX_DAILY_LOSS = max(1.0, _env_float("MAX_DAILY_LOSS", 5.0))
+MAX_DAILY_TRADES = max(1, int(os.environ.get("MAX_DAILY_TRADES", "5")))
 MAX_CONSECUTIVE_LOSSES = max(
     1, int(os.environ.get("MAX_CONSECUTIVE_LOSSES", "3"))
 )
@@ -93,7 +93,7 @@ DEMO_LEARNING_MIN_SCORE = min(
     100,
     max(
         SIGNAL_SCORE_THRESHOLD,
-        int(os.environ.get("DEMO_LEARNING_MIN_SCORE", "80")),
+        int(os.environ.get("DEMO_LEARNING_MIN_SCORE", "90")),
     ),
 )
 SCAN_ROTATION_ENABLED = _env_bool("SCAN_ROTATION_ENABLED", True)
@@ -3219,20 +3219,51 @@ def _execute_platform_demo_order(page, order: dict) -> None:
         return
 
     duration_patterns = (
-        r"^1\s*dak(?:ika)?\.?$",
-        r"^1\s*min(?:ute)?s?\.?$",
-        r"^60\s*(?:sec(?:ond)?s?|saniye)\.?$",
-        r"^00:01:00$",
-        r"^01:00$",
+        r"(?:^|\s)1\s*dak(?:ika)?\.?(?:\s|$)",
+        r"(?:^|\s)1\s*min(?:ute)?s?\.?(?:\s|$)",
+        r"(?:^|\s)60\s*(?:sec(?:ond)?s?|saniye)\.?(?:\s|$)",
+        r"(?:^|\s)00:01:00(?:\s|$)",
+        r"(?:^|\s)01:00(?:\s|$)",
     )
-    duration = None
-    for pattern in duration_patterns:
-        duration = _first_visible(
-            page.get_by_text(re.compile(pattern, re.IGNORECASE))
-        )
-        if duration is not None:
+    duration_found = False
+    duration_locator = page.locator(
+        'input,button,[role="button"],[role="spinbutton"],'
+        '[aria-label],[title],[data-test],[data-testid]'
+    )
+    for index in range(min(duration_locator.count(), 1500)):
+        candidate = duration_locator.nth(index)
+        try:
+            if not candidate.is_visible():
+                continue
+            candidate_text = " ".join(
+                filter(
+                    None,
+                    (
+                        candidate.get_attribute("value"),
+                        candidate.get_attribute("aria-label"),
+                        candidate.get_attribute("title"),
+                        candidate.inner_text(timeout=200),
+                    ),
+                )
+            )
+        except Exception:
+            continue
+        if any(
+            re.search(pattern, candidate_text, re.IGNORECASE)
+            for pattern in duration_patterns
+        ):
+            duration_found = True
             break
-    if duration is None:
+    if not duration_found:
+        try:
+            body_text = page.locator("body").inner_text(timeout=1000)
+            duration_found = any(
+                re.search(pattern, body_text, re.IGNORECASE)
+                for pattern in duration_patterns
+            )
+        except Exception:
+            duration_found = False
+    if not duration_found:
         _mark_platform_order(
             order,
             "BLOCKED",
@@ -3248,18 +3279,50 @@ def _execute_platform_demo_order(page, order: dict) -> None:
     button = None
     button_name = button_names[0]
 
+    # Prefer an exact accessible button name. OlympTrade sometimes appends the
+    # payout percentage to that name, so the broader DOM scan below is only a
+    # fallback.
     for candidate_name in button_names:
         candidate = _first_visible(
             page.get_by_role("button", name=candidate_name, exact=True)
         )
-        if candidate is None:
-            candidate = _first_visible(
-                page.locator(f'button:has-text("{candidate_name}")')
-            )
         if candidate is not None and candidate.is_enabled():
             button = candidate
             button_name = candidate_name
             break
+
+    direction_pattern = re.compile(
+        r"(?:^|\s)(?:"
+        + "|".join(re.escape(name) for name in button_names)
+        + r")(?:\s|$)",
+        re.IGNORECASE,
+    )
+    candidates = page.locator('button,[role="button"]')
+    fallback_indexes = range(min(candidates.count(), 1000)) if button is None else ()
+    for index in fallback_indexes:
+        candidate = candidates.nth(index)
+        try:
+            label = " ".join(
+                filter(
+                    None,
+                    (
+                        candidate.get_attribute("aria-label"),
+                        candidate.get_attribute("title"),
+                        candidate.inner_text(timeout=200),
+                    ),
+                )
+            )
+            label = re.sub(r"\s+", " ", label).strip()
+            if (
+                candidate.is_visible()
+                and candidate.is_enabled()
+                and direction_pattern.search(label)
+            ):
+                button = candidate
+                button_name = label or button_names[0]
+                break
+        except Exception:
+            continue
 
     if button is None:
         _mark_platform_order(
