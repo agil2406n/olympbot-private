@@ -3104,6 +3104,101 @@ def _set_platform_trade_amount(page, target: int) -> tuple[bool, str]:
     return False, "Məbləğ 500 addım daxilində qurula bilmədi"
 
 
+TRADE_DURATION_DOM_SCRIPT = r"""
+({action}) => {
+  const visible = el => {
+    if (!el) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && rect.width > 0 && rect.height > 0;
+  };
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const headings = [...document.querySelectorAll('body *')].filter(el =>
+    visible(el) && /^(süre|duration|müddət)$/i.test(norm(el.innerText || el.textContent))
+  );
+  for (const heading of headings) {
+    let box = heading.parentElement;
+    for (let depth = 0; box && depth < 5; depth++, box = box.parentElement) {
+      const text = norm(box.innerText || box.textContent);
+      const controls = [...box.querySelectorAll('button,[role="button"]')].filter(visible);
+      if (controls.length < 2 || !/\d/.test(text)) continue;
+      const valueNodes = [...box.querySelectorAll('input,[role="spinbutton"],*')]
+        .filter(el => visible(el) && el !== heading)
+        .map(el => ({el, text: norm(
+          (el instanceof HTMLInputElement ? el.value : '') ||
+          el.innerText || el.textContent || el.getAttribute('aria-valuenow')
+        )}))
+        .filter(item => /\d/.test(item.text) && item.text.length <= 24);
+      const valueNode = valueNodes.sort((a, b) => a.text.length - b.text.length)[0];
+      if (!valueNode) continue;
+      if (action === 'open') valueNode.el.click();
+      return {ok: true, text: valueNode.text};
+    }
+  }
+  return {ok: false, text: ''};
+}
+"""
+
+
+def _trade_duration_control(page, action: str = "read") -> dict:
+    try:
+        result = page.evaluate(TRADE_DURATION_DOM_SCRIPT, {"action": action})
+    except Exception as exc:
+        return {"ok": False, "text": "", "error": str(exc)}
+    return result if isinstance(result, dict) else {"ok": False, "text": ""}
+
+
+def _is_one_minute_duration(value: str) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    patterns = (
+        r"^0*1\s*(?:dk|dak(?:ika)?|dəq(?:iqə)?|deq(?:iqe)?|d)$",
+        r"^0*1\s*(?:m|min(?:ute)?s?)$",
+        r"^0*60\s*(?:s|sec(?:ond)?s?|san(?:iye)?)$",
+        r"^(?:00:)?0?1:00$",
+        r"^00:01$",
+    )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _set_platform_trade_duration(page) -> tuple[bool, str]:
+    current = _trade_duration_control(page)
+    if not current.get("ok"):
+        return False, "Sağ paneldəki Süre idarəsi tapılmadı"
+    if _is_one_minute_duration(str(current.get("text") or "")):
+        return True, ""
+
+    opened = _trade_duration_control(page, "open")
+    if not opened.get("ok"):
+        return False, "Süre seçim menyusu açıla bilmədi"
+    page.wait_for_timeout(350)
+
+    option_pattern = re.compile(
+        r"^\s*(?:1\s*(?:dk|dakika|dəqiqə|deqiqe|d|min(?:ute)?)|"
+        r"60\s*(?:s|sec(?:ond)?s?|saniye)|00:01|01:00)\s*$",
+        re.IGNORECASE,
+    )
+    options = page.get_by_text(option_pattern)
+    for index in range(min(options.count(), 100)):
+        option = options.nth(index)
+        try:
+            if not option.is_visible():
+                continue
+            option.click(timeout=2500)
+            page.wait_for_timeout(350)
+            verified = _trade_duration_control(page)
+            if verified.get("ok") and _is_one_minute_duration(
+                str(verified.get("text") or "")
+            ):
+                return True, ""
+        except Exception:
+            continue
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return False, "Süre menyusunda 1 dəqiqə seçimi tapılmadı"
+
+
 def _find_platform_pair_tab(page, pair: str):
     """Return a visible open OlympTrade asset tab for ``pair``, if one exists."""
     labels = WATCH_PAIR_LABELS.get(pair, ())
@@ -3469,59 +3564,12 @@ def _execute_platform_demo_order(page, order: dict) -> None:
         )
         return
 
-    duration_patterns = (
-        r"(?:^|\W)1\s*(?:dk|dak(?:ika)?|dəq(?:iqə)?|deq(?:iqe)?)(?:\W|$)",
-        r"(?:^|\W)1\s*(?:m|min(?:ute)?s?)(?:\W|$)",
-        r"(?:^|\W)60\s*(?:s|sec(?:ond)?s?|san(?:iye)?)(?:\W|$)",
-        r"(?:^|\W)00:01:00(?:\W|$)",
-        r"(?:^|\W)0?1:00(?:\W|$)",
-        r"(?:^|\W)00:01(?:\W|$)",
-    )
-    duration_found = False
-    duration_locator = page.locator(
-        'input,button,[role="button"],[role="spinbutton"],'
-        '[aria-label],[title],[data-test],[data-testid]'
-    )
-    for index in range(min(duration_locator.count(), 1500)):
-        candidate = duration_locator.nth(index)
-        try:
-            if not candidate.is_visible():
-                continue
-            candidate_text = " ".join(
-                filter(
-                    None,
-                    (
-                        candidate.get_attribute("value"),
-                        candidate.get_attribute("aria-label"),
-                        candidate.get_attribute("title"),
-                        candidate.get_attribute("data-value"),
-                        candidate.get_attribute("data-duration"),
-                        candidate.inner_text(timeout=200),
-                    ),
-                )
-            )
-        except Exception:
-            continue
-        if any(
-            re.search(pattern, candidate_text, re.IGNORECASE)
-            for pattern in duration_patterns
-        ):
-            duration_found = True
-            break
-    if not duration_found:
-        try:
-            body_text = page.locator("body").inner_text(timeout=1000)
-            duration_found = any(
-                re.search(pattern, body_text, re.IGNORECASE)
-                for pattern in duration_patterns
-            )
-        except Exception:
-            duration_found = False
-    if not duration_found:
+    duration_ok, duration_error = _set_platform_trade_duration(page)
+    if not duration_ok:
         _mark_platform_order(
             order,
             "BLOCKED",
-            "1 dəqiqəlik müddət UI-də tapılmadı",
+            duration_error,
         )
         return
 
