@@ -615,8 +615,6 @@ class DemoTradingEngine:
                 configured_amount = float(platform_state["trade_amount"])
             if not platform_execution:
                 reason = "OlympTrade Demo qoşulmayıb; daxili virtual əməliyyat yaradılmır"
-            elif self.open_positions:
-                reason = "OlympTrade Demo-da eyni anda yalnız bir əməliyyat açıla bilər"
             elif self._has_open_pair(pair):
                 reason = "Aktiv üzrə açıq demo əməliyyatı var"
             elif now - self.last_trade_times.get(pair, 0.0) < COOLDOWN_SEC:
@@ -3485,12 +3483,10 @@ def _rotate_market_scanner(page, now: float) -> None:
         if now - float(scanner_state["last_rotation"]) < SCAN_ROTATION_SEC:
             return
     with platform_lock:
-        platform_busy = bool(platform_orders or platform_pending)
-    with trade_engine.lock:
-        trade_busy = bool(trade_engine.open_positions)
-    if platform_busy or trade_busy:
+        platform_busy = bool(platform_orders)
+    if platform_busy:
         with scanner_lock:
-            scanner_state["status"] = "Demo əməliyyatı tamamlanır"
+            scanner_state["status"] = "Demo əmri platformaya göndərilir"
         return
 
     configured_pairs = [item["pair"] for item in _resolved_watch_assets()]
