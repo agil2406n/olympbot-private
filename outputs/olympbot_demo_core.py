@@ -331,8 +331,9 @@ class DemoDatabase:
                 """
                 INSERT INTO trades
                     (created_at, pair, direction, amount, entry_price, entry_ts, expiry_ts,
-                     rsi, ema_fast, ema_slow, martingale_step, platform_status, platform_error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     rsi, ema_fast, ema_slow, martingale_step, result,
+                     platform_status, platform_error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.created_at,
@@ -346,6 +347,7 @@ class DemoDatabase:
                     trade.ema_fast,
                     trade.ema_slow,
                     trade.martingale_step,
+                    "PENDING" if trade.platform_status == "PENDING" else "OPEN",
                     trade.platform_status,
                     trade.platform_error,
                 ),
@@ -363,6 +365,26 @@ class DemoDatabase:
                 "UPDATE trades SET platform_status=?, platform_error=? WHERE id=?",
                 (status, error, trade_id),
             )
+
+    def activate_platform_trade(self, trade_id: int) -> bool:
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE trades SET result='OPEN' WHERE id=? AND result='PENDING'",
+                (trade_id,),
+            )
+            return cursor.rowcount == 1
+
+    def cancel_platform_trade(self, trade_id: int, error: str) -> bool:
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE trades
+                SET result='CANCELLED', exit_ts=?, pnl=0, platform_error=?
+                WHERE id=? AND result='PENDING'
+                """,
+                (time.time(), error, trade_id),
+            )
+            return cursor.rowcount == 1
 
     def resolve_trade(
         self,
@@ -683,8 +705,32 @@ class DemoTradingEngine:
             trade.amount,
             entry_price,
         )
-        _event("demo_trade_opened", **asdict(trade))
+        if not platform_execution:
+            _event("demo_trade_opened", **asdict(trade))
         return True, f"Demo əməliyyat #{trade.id} açıldı"
+
+    def confirm_platform_open(self, trade_id: int) -> bool:
+        with self.lock:
+            trade = self.open_positions.get(int(trade_id))
+            if trade is None or not self.db.activate_platform_trade(int(trade_id)):
+                return False
+            trade.platform_status = "CLICKED"
+            trade.platform_error = ""
+            payload = asdict(trade)
+        _event("demo_trade_opened", **payload)
+        return True
+
+    def cancel_platform_open(self, trade_id: int, error: str) -> bool:
+        with self.lock:
+            trade = self.open_positions.get(int(trade_id))
+            if trade is None:
+                return False
+            if not self.db.cancel_platform_trade(int(trade_id), error):
+                return False
+            self.open_positions.pop(int(trade_id), None)
+            if self.last_trade_times.get(trade.pair) == trade.entry_ts:
+                self.last_trade_times.pop(trade.pair, None)
+        return True
 
     def on_tick(self, pair: str, price: float, timestamp: float) -> None:
         with platform_lock:
@@ -3179,6 +3225,14 @@ def _rotate_market_scanner(page, now: float) -> None:
 
 def _mark_platform_order(order: dict, status: str, error: str = "") -> None:
     database.update_platform_status(order["trade_id"], status, error)
+    if status == "CLICKED":
+        if not trade_engine.confirm_platform_open(int(order["trade_id"])):
+            error = "Platform kliki daxili əməliyyatla təsdiqlənmədi"
+            status = "ERROR"
+            database.update_platform_status(order["trade_id"], status, error)
+            trade_engine.cancel_platform_open(int(order["trade_id"]), error)
+    else:
+        trade_engine.cancel_platform_open(int(order["trade_id"]), error)
     with platform_lock:
         platform_state["last_order"] = {
             **order,

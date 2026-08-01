@@ -815,7 +815,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     function renderEvents(events, trades) {
-      const persistentTrades = (trades || []).map(t => ({
+      const persistentTrades = (trades || [])
+        .filter(t => ['OPEN', 'WIN', 'LOSS', 'DRAW'].includes(String(t.result || '')))
+        .map(t => ({
         time: new Date(Number(t.exit_ts || t.entry_ts || t.created_at) * 1000).toISOString(),
         event: `demo_trade_${String(t.result || 'OPEN').toLowerCase()}`,
         pair: t.pair,
