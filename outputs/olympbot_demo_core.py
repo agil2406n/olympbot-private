@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from flask import Flask, jsonify, request
+    from flask import Flask, Response, jsonify, request
     from playwright.sync_api import sync_playwright
 except ImportError as exc:
     raise SystemExit(
@@ -3633,6 +3633,19 @@ def _process_platform_commands(page) -> None:
                 ok=ok,
                 error=error,
             )
+        elif command.get("type") == "screenshot":
+            try:
+                command["image"] = page.screenshot(
+                    type="jpeg",
+                    quality=82,
+                    full_page=False,
+                )
+                command["error"] = ""
+            except Exception as exc:
+                command["image"] = b""
+                command["error"] = str(exc)
+            finally:
+                command["completed"].set()
 
 
 def _settle_platform_orders() -> None:
@@ -3819,6 +3832,34 @@ def api_demo_stats():
 def api_platform_demo():
     with platform_lock:
         return jsonify(dict(platform_state))
+
+
+@app.get("/api/platform-demo/screenshot")
+def api_platform_demo_screenshot():
+    """Return a fresh in-memory screenshot from the server's OlympTrade page."""
+    command = {
+        "type": "screenshot",
+        "completed": threading.Event(),
+        "image": b"",
+        "error": "",
+    }
+    with platform_lock:
+        platform_commands.append(command)
+    if not command["completed"].wait(timeout=12.0):
+        return jsonify({"error": "OlympTrade ekran görüntüsü vaxtında alınmadı"}), 504
+    if command["error"] or not command["image"]:
+        return jsonify(
+            {"error": command["error"] or "OlympTrade ekran görüntüsü boşdur"}
+        ), 500
+    return Response(
+        command["image"],
+        mimetype="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Content-Disposition": "inline; filename=olymptrade-current.jpg",
+        },
+    )
 
 
 @app.post("/api/platform-demo")

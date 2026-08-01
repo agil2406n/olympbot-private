@@ -329,6 +329,7 @@ DASHBOARD_HTML = r"""<!doctype html>
         <span class="badge"><span id="platformDot" class="dot"></span><span id="platformText">Demo hesab yoxlanılır</span></span>
         <input id="tradeAmount" type="number" min="1" max="10000" step="1" value="1" title="OlympTrade Demo əməliyyat məbləği">
         <button class="btn btn-dry" onclick="saveTradeAmount()">Məbləği yaz</button>
+        <a class="btn btn-dry" href="/api/platform-demo/screenshot" target="_blank" rel="noopener">OlympTrade ekranı</a>
         <a class="btn btn-dry" href="/api/export/trades.csv">Hesabat CSV</a>
         <button id="scannerButton" class="btn btn-dry" onclick="toggleScanner()">Skan: aktiv</button>
         <button id="platformButton" class="btn btn-live" onclick="togglePlatformDemo()">OlympTrade Demo qoş</button>
