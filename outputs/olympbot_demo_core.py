@@ -3118,6 +3118,76 @@ def _find_platform_pair_tab(page, pair: str):
     return None
 
 
+ASSET_PICKER_OPENER_DOM_SCRIPT = r"""
+() => {
+  const visible = el => {
+    if (!el) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && rect.width >= 16 && rect.height >= 16;
+  };
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const describe = el => norm([
+    el.innerText, el.textContent, el.getAttribute('aria-label'),
+    el.getAttribute('title'), el.getAttribute('data-test'),
+    el.getAttribute('data-testid')
+  ].filter(Boolean).join(' '));
+  const nodes = [...document.querySelectorAll(
+    'button,[role="button"],[aria-label],[title],[data-test],[data-testid]'
+  )].filter(visible);
+  const named = nodes.find(el =>
+    /(add\s*(an?\s*)?asset|select\s*asset|asset\s*search|instrument|market|varl[ıi]k\s*(ekle|seç)|aktiv\s*(əlavə|seç))/i.test(describe(el))
+  );
+  if (named) { named.click(); return {ok: true, method: 'named'}; }
+
+  const pluses = nodes.map(el => {
+    const rect = el.getBoundingClientRect();
+    const text = describe(el);
+    const context = norm(el.parentElement?.parentElement?.innerText || '');
+    let score = 0;
+    if (/^(\+|＋)$/.test(text)) score += 8;
+    if (/(plus|add|ekle|əlavə)/i.test(text)) score += 5;
+    if (rect.top < Math.max(220, innerHeight * 0.30)) score += 5;
+    if (rect.left < innerWidth * 0.65) score += 2;
+    if (/(amount|tutar|məbləğ|duration|müddət)/i.test(context)) score -= 20;
+    return {el, score, top: rect.top, left: rect.left, text};
+  }).filter(item => item.score >= 8)
+    .sort((a, b) => b.score - a.score || a.top - b.top || a.left - b.left);
+  if (!pluses.length) return {ok: false, method: '', candidates: []};
+  pluses[0].el.click();
+  return {
+    ok: true,
+    method: 'positioned-plus',
+    selected: {top: pluses[0].top, left: pluses[0].left, text: pluses[0].text}
+  };
+}
+"""
+
+
+def _find_asset_picker_result(page, pair: str):
+    labels = WATCH_PAIR_LABELS.get(pair, ())
+    for label in labels:
+        pattern = re.compile(
+            rf"^\s*{re.escape(label)}(?:\s|$)",
+            re.IGNORECASE,
+        )
+        candidates = page.get_by_text(pattern)
+        for index in range(min(candidates.count(), 100)):
+            candidate = candidates.nth(index)
+            try:
+                if not candidate.is_visible():
+                    continue
+                clickable = candidate.locator(
+                    'xpath=ancestor-or-self::*[self::button or @role="button"][1]'
+                )
+                if clickable.count() and clickable.first.is_visible():
+                    return clickable.first
+                return candidate
+            except Exception:
+                continue
+    return None
+
+
 def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
     """Open an asset from OlympTrade's picker without user interaction."""
     labels = WATCH_PAIR_LABELS.get(pair, ())
@@ -3156,12 +3226,14 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
                 break
         except Exception:
             continue
-    if opener is None:
-        return False, "OlympTrade aktiv seçici düyməsi tapılmadı"
-
     try:
-        opener.click(timeout=3000)
-        page.wait_for_timeout(400)
+        if opener is not None:
+            opener.click(timeout=3000)
+        else:
+            opened = page.evaluate(ASSET_PICKER_OPENER_DOM_SCRIPT)
+            if not isinstance(opened, dict) or not opened.get("ok"):
+                return False, "OlympTrade aktiv seçici düyməsi tapılmadı"
+        page.wait_for_timeout(500)
     except Exception as exc:
         return False, f"OlympTrade aktiv seçicisi açıla bilmədi: {exc}"
 
@@ -3209,7 +3281,7 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
             page.wait_for_timeout(350)
         except Exception:
             continue
-        target = _find_platform_pair_tab(page, pair)
+        target = _find_asset_picker_result(page, pair)
         if target is None:
             continue
         try:
