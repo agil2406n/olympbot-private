@@ -288,6 +288,15 @@ DASHBOARD_HTML = r"""<!doctype html>
       display: none; margin: -9px 0 15px; border-color: rgba(255,107,125,.4);
       color: #ffbbc3; background: rgba(255,107,125,.08);
     }
+    .platform-live { margin-bottom: 15px; overflow: hidden; }
+    .platform-screen-wrap {
+      position: relative; width: 100%; aspect-ratio: 16 / 9;
+      max-height: 720px; background: #050b10; overflow: hidden;
+    }
+    .platform-screen {
+      display: block; width: 100%; height: 100%; object-fit: contain;
+      background: #050b10;
+    }
     .toast {
       position: fixed; right: 24px; bottom: 24px; max-width: 390px;
       padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px;
@@ -345,6 +354,19 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="card metric"><div class="metric-label">Win rate</div><div id="winRate" class="metric-value">0%</div><div id="winLoss" class="metric-note">0W / 0L</div></div>
       <div class="card metric"><div class="metric-label">Qəbul edilən tick</div><div id="tickCount" class="metric-value">0</div><div id="pairCount" class="metric-note">0 aktiv</div></div>
       <div class="card metric"><div class="metric-label">İş müddəti</div><div id="uptime" class="metric-value">00:00</div><div class="metric-note">Panel aktivdir</div></div>
+    </section>
+
+    <section class="card platform-live">
+      <div class="card-head">
+        <div>
+          <div class="card-title">CANLI OLYMPTRADE EKRANI</div>
+          <div class="card-note">Serverdə botun idarə etdiyi Deneme hesabı · avtomatik yenilənir</div>
+        </div>
+        <span id="platformScreenStatus" class="badge">Qoşulur…</span>
+      </div>
+      <div class="platform-screen-wrap">
+        <img id="platformLiveScreen" class="platform-screen" alt="Botun canlı OlympTrade ekranı">
+      </div>
     </section>
 
     <section class="card signal-terminal">
@@ -457,6 +479,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     let visibleCandles = 60;
     let candleOffset = 0;
     let chartGeometry = null;
+    let platformScreenLoading = false;
     const $ = id => document.getElementById(id);
     const fmt = value => value == null || !Number.isFinite(Number(value))
       ? '—' : Number(value).toLocaleString('en-US', {maximumFractionDigits: 8});
@@ -925,6 +948,22 @@ DASHBOARD_HTML = r"""<!doctype html>
       } catch (e) { toast('Bot dayandırılır…'); }
     }
 
+    function refreshPlatformScreen() {
+      if (platformScreenLoading || document.hidden) return;
+      platformScreenLoading = true;
+      const image = new Image();
+      image.onload = () => {
+        $('platformLiveScreen').src = image.src;
+        $('platformScreenStatus').textContent = 'CANLI · ' + new Date().toLocaleTimeString();
+        platformScreenLoading = false;
+      };
+      image.onerror = () => {
+        $('platformScreenStatus').textContent = 'Ekran gözlənilir';
+        platformScreenLoading = false;
+      };
+      image.src = '/api/platform-demo/screenshot?t=' + Date.now();
+    }
+
     async function refresh() {
       try {
         const res = await fetch('/api/dashboard', {cache:'no-store'});
@@ -945,7 +984,10 @@ DASHBOARD_HTML = r"""<!doctype html>
     });
     $('priceChart').addEventListener('mouseleave', () => $('chartHover').style.display='none');
     window.addEventListener('resize', () => snapshot && renderChart());
-    refresh(); setInterval(refresh, 1200);
+    refresh();
+    refreshPlatformScreen();
+    setInterval(refresh, 1200);
+    setInterval(refreshPlatformScreen, 2500);
   </script>
 </body>
 </html>"""
