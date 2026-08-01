@@ -572,11 +572,11 @@ class DemoTradingEngine:
         with self.lock:
             # Müddəti bitmiş Demo mövqeyi yeni siqnalları daimi bloklamasın.
             stale_cutoff = now - 45
-            self.open_positions = [
-                position
-                for position in self.open_positions
+            self.open_positions = {
+                trade_id: position
+                for trade_id, position in self.open_positions.items()
                 if float(position.expiry_ts) >= stale_cutoff
-            ]
+            }
 
             if self.last_signal_buckets.get(pair) == candle_bucket:
                 return False, "Eyni şam siqnalı"
