@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gc
 import logging
 import math
 import os
@@ -11,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import ctypes
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -101,6 +103,10 @@ SCAN_ROTATION_ENABLED = _env_bool("SCAN_ROTATION_ENABLED", True)
 SCAN_ROTATION_SEC = max(
     10, int(os.environ.get("SCAN_ROTATION_SEC", "15"))
 )
+BROWSER_PAGE_RECYCLE_SEC = max(
+    900, int(os.environ.get("BROWSER_PAGE_RECYCLE_SEC", "3600"))
+)
+MEMORY_TRIM_SEC = max(60, int(os.environ.get("MEMORY_TRIM_SEC", "300")))
 AI_CONFIRMATION_ENABLED = _env_bool(
     "AI_CONFIRMATION_ENABLED",
     bool(os.environ.get("OPENAI_API_KEY")),
@@ -147,6 +153,14 @@ WATCH_PAIR_LABELS = {
     "ETHUSD": ("Ethereum", "ETH/USD", "ETHUSD"),
     "AUDCAD_OTC": ("AUD/CAD OTC", "AUDCAD OTC"),
     "AUDCAD": ("AUD/CAD", "AUDCAD"),
+}
+PLATFORM_PAIR_CODES = {
+    "BNBUSD": "BNBUSD_OTC",
+    "BTCUSD_OTC": "BTCUSD_OTC",
+    "ETHUSD_OTC": "ETHUSD_OTC",
+}
+MARKET_PAIR_ALIASES = {
+    "BNBUSD_OTC": "BNBUSD",
 }
 WATCH_PAIR_CODES = frozenset(
     pair for asset in WATCH_ASSETS for pair in asset["pairs"]
@@ -409,9 +423,27 @@ class DemoDatabase:
     def open_trades(self) -> list[dict]:
         with self.lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM trades WHERE result='OPEN' ORDER BY id"
+                """
+                SELECT * FROM trades
+                WHERE result='OPEN' AND platform_status='CLICKED'
+                ORDER BY id
+                """
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def cancel_unconfirmed_platform_trades(self) -> int:
+        """Close legacy attempts that never produced a verified platform click."""
+        with self.lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE trades
+                SET result='CANCELLED', exit_ts=COALESCE(exit_ts, ?), pnl=0
+                WHERE result IN ('OPEN', 'PENDING')
+                  AND platform_status <> 'CLICKED'
+                """,
+                (time.time(),),
+            )
+            return int(cursor.rowcount)
 
     def recent_trades(self, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit), 500))
@@ -491,6 +523,12 @@ class DemoDatabase:
 
 
 database = DemoDatabase(DB_PATH)
+_cancelled_legacy_attempts = database.cancel_unconfirmed_platform_trades()
+if _cancelled_legacy_attempts:
+    log.warning(
+        "%s köhnə, kliklə təsdiqlənməmiş Demo cəhdi bağlandı",
+        _cancelled_legacy_attempts,
+    )
 
 
 @dataclass
@@ -839,7 +877,12 @@ class DemoTradingEngine:
             .replace(hour=0, minute=0, second=0, microsecond=0)
             .timestamp()
         )
-        today = self.db.trades_since(day_start)
+        today = [
+            row
+            for row in self.db.trades_since(day_start)
+            if str(row.get("platform_status") or "").upper()
+            in {"CLICKED", "SETTLED"}
+        ]
         closed = [trade for trade in today if trade["result"] != "OPEN"]
         daily_pnl = round(sum(float(trade["pnl"]) for trade in closed), 2)
         consecutive_losses = 0
@@ -2527,12 +2570,13 @@ def _record_ws_shape(parsed) -> None:
 def _candles_from_ticks(ticks: list[dict]) -> list[dict]:
     grouped: dict[tuple[str, int], dict] = {}
     for tick in ticks:
+        pair = MARKET_PAIR_ALIASES.get(str(tick["pair"]), str(tick["pair"]))
         bucket = int(tick["ts"] // CANDLE_INTERVAL_SEC) * CANDLE_INTERVAL_SEC
-        key = (tick["pair"], bucket)
+        key = (pair, bucket)
         candle = grouped.get(key)
         if candle is None:
             grouped[key] = {
-                "pair": tick["pair"],
+                "pair": pair,
                 "bucket": bucket,
                 "open": tick["price"],
                 "high": tick["price"],
@@ -2566,7 +2610,8 @@ def _merge_historical_candles(items: list[dict]) -> int:
         return 0
     by_pair: dict[str, list[dict]] = {}
     for candle in items:
-        by_pair.setdefault(candle["pair"], []).append(candle)
+        pair = MARKET_PAIR_ALIASES.get(str(candle["pair"]), str(candle["pair"]))
+        by_pair.setdefault(pair, []).append({**candle, "pair": pair})
     loaded = 0
     persisted = []
     completed_candidates: list[tuple[str, int]] = []
@@ -2668,7 +2713,8 @@ def add_packet(direction: str, url: str, data=None) -> None:
         _merge_historical_candles(historical_candles)
 
     for tick in _extract_otp_ticks(parsed):
-        pair = tick["pair"]
+        pair = MARKET_PAIR_ALIASES.get(str(tick["pair"]), str(tick["pair"]))
+        tick = {**tick, "pair": pair}
         completed_candle = None
         with candles_lock:
             live_prices[pair] = {"price": tick["price"], "ts": tick["ts"]}
@@ -2943,6 +2989,8 @@ def _inspect_platform_demo(page) -> None:
     )
     balance_value = _parse_money(balance_text)
     amount_control = _trade_amount_control(page)
+    duration_control = _trade_duration_control(page)
+    selected_pair = _selected_platform_pair(page)
     visible_trade_amount = (
         float(amount_control["value"])
         if amount_control.get("ok") and amount_control.get("value") is not None
@@ -2967,6 +3015,9 @@ def _inspect_platform_demo(page) -> None:
                 ),
                 "trade_amount": configured_amount,
                 "visible_trade_amount": visible_trade_amount,
+                "visible_trade_duration": str(duration_control.get("text") or ""),
+                "selected_pair": str(selected_pair.get("pair") or ""),
+                "selected_pair_code": str(selected_pair.get("code") or ""),
                 "safety_marker": safety_detected,
                 "last_checked": time.time(),
                 "last_error": (
@@ -3090,7 +3141,7 @@ def _set_platform_trade_amount(page, target: int) -> tuple[bool, str]:
 
 
 TRADE_DURATION_DOM_SCRIPT = r"""
-({action}) => {
+async ({action}) => {
   const visible = el => {
     if (!el) return false;
     const style = getComputedStyle(el), rect = el.getBoundingClientRect();
@@ -3098,6 +3149,54 @@ TRADE_DURATION_DOM_SCRIPT = r"""
       && rect.width > 0 && rect.height > 0;
   };
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const exactInput = document.querySelector('[data-test="deal-duration-input"]');
+  if (visible(exactInput)) {
+    let row = exactInput.parentElement;
+    while (row && !row.querySelector('[data-test="deal-form-input-controls-minus"]')) {
+      row = row.parentElement;
+    }
+    const minus = row?.querySelector('[data-test="deal-form-input-controls-minus"]');
+    const plus = row?.querySelector('[data-test="deal-form-input-controls-plus"]');
+    const read = () => norm(exactInput.value || exactInput.getAttribute('value'));
+    const parseMinutes = text => {
+      const value = norm(text).toLocaleLowerCase();
+      const hours = value.match(/(\d+)\s*h(?:our|ours)?\b/);
+      const minutes = value.match(/(\d+)\s*(?:d|dk|dak(?:ika)?|m|min(?:ute)?s?)\b/);
+      if (hours || minutes) {
+        return Number(hours?.[1] || 0) * 60 + Number(minutes?.[1] || 0);
+      }
+      const colon = value.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (colon) {
+        return colon[3]
+          ? Number(colon[1]) * 60 + Number(colon[2])
+          : Number(colon[1]) * 60 + Number(colon[2]);
+      }
+      const plain = value.match(/^0*(\d+)$/);
+      return plain ? Number(plain[1]) : null;
+    };
+    if (action === 'open') exactInput.click();
+    if (action === 'minus' && visible(minus)) minus.click();
+    if (action === 'plus' && visible(plus)) plus.click();
+    if (action === 'set_one_minute') {
+      let unchanged = 0;
+      let previous = read();
+      for (let step = 0; step < 1500; step++) {
+        const text = read(), total = parseMinutes(text);
+        if (total === 1) return {ok: true, text, steps: step, exact: true};
+        const control = total !== null && total < 1 ? plus : minus;
+        if (!visible(control)) return {ok: false, text, steps: step, exact: true};
+        control.click();
+        await new Promise(resolve => setTimeout(resolve, 24));
+        const updated = read();
+        if (updated === previous) unchanged += 1;
+        else unchanged = 0;
+        if (unchanged >= 30) return {ok: false, text: updated, steps: step + 1, exact: true};
+        previous = updated;
+      }
+      return {ok: false, text: read(), steps: 1500, exact: true};
+    }
+    return {ok: true, text: read(), exact: true};
+  }
   const headings = [...document.querySelectorAll('body *')].filter(el =>
     visible(el) && /^(süre|duration|müddət)$/i.test(norm(el.innerText || el.textContent))
   );
@@ -3138,6 +3237,58 @@ TRADE_DURATION_DOM_SCRIPT = r"""
 """
 
 
+PLATFORM_DOM_DIAGNOSTICS_SCRIPT = r"""
+() => {
+  const visible = el => {
+    if (!el) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && rect.width > 0 && rect.height > 0;
+  };
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const describe = el => ({
+    tag: String(el.tagName || '').toLowerCase(),
+    text: norm(el.innerText || el.textContent).slice(0, 160),
+    ariaLabel: el.getAttribute('aria-label') || '',
+    ariaSelected: el.getAttribute('aria-selected') || '',
+    role: el.getAttribute('role') || '',
+    dataTest: el.getAttribute('data-test') || '',
+    dataTestId: el.getAttribute('data-testid') || '',
+    className: typeof el.className === 'string' ? el.className.slice(0, 240) : '',
+    value: 'value' in el ? String(el.value || '') : '',
+    ariaValueNow: el.getAttribute('aria-valuenow') || '',
+  });
+  const duration = [];
+  const durationHeadings = [...document.querySelectorAll('body *')].filter(el =>
+    visible(el) && /^(süre|duration|müddət)$/i.test(norm(el.innerText || el.textContent))
+  );
+  for (const heading of durationHeadings.slice(0, 5)) {
+    let box = heading;
+    for (let depth = 0; box && depth < 5; depth++, box = box.parentElement) {
+      duration.push({
+        depth,
+        ...describe(box),
+        children: [...box.children].filter(visible).slice(0, 12).map(describe),
+        descendants: [...box.querySelectorAll('input,button,[role="button"],[role="spinbutton"],[data-test],[data-testid]')]
+          .filter(visible).slice(0, 40).map(describe),
+      });
+    }
+  }
+  const pairPattern = /(Bitcoin|BTC|BNB|Ethereum|ETH).*OTC/i;
+  const pairs = [...document.querySelectorAll('body *')]
+    .filter(el => visible(el) && pairPattern.test(norm(el.innerText || el.textContent))
+      && norm(el.innerText || el.textContent).length <= 80)
+    .slice(0, 80)
+    .map(el => ({
+      ...describe(el),
+      parent: el.parentElement ? describe(el.parentElement) : null,
+      grandparent: el.parentElement?.parentElement ? describe(el.parentElement.parentElement) : null,
+    }));
+  return {url: location.href, title: document.title, duration, pairs};
+}
+"""
+
+
 def _trade_duration_control(page, action: str = "read") -> dict:
     try:
         result = page.evaluate(TRADE_DURATION_DOM_SCRIPT, {"action": action})
@@ -3147,7 +3298,7 @@ def _trade_duration_control(page, action: str = "read") -> dict:
 
 
 def _is_one_minute_duration(value: str) -> bool:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", str(value or "")).strip().rstrip(".,")
     patterns = (
         r"^0*1\s*(?:dk|dak(?:ika)?|dəq(?:iqə)?|deq(?:iqe)?|d)$",
         r"^0*1\s*(?:m|min(?:ute)?s?)$",
@@ -3165,6 +3316,19 @@ def _set_platform_trade_duration(page) -> tuple[bool, str]:
         return False, "Sağ paneldəki Süre idarəsi tapılmadı"
     if _is_one_minute_duration(str(current.get("text") or "")):
         return True, ""
+
+    # Cari OlympTrade DOM-u sabit data-test atributları verir. Böyük saat/dəqiqə
+    # dəyərini bir əmrdə təhlükəsiz şəkildə 1 dəqiqəyə endiririk və sonda yenidən
+    # input dəyərini oxuyuruq. Bu, köhnə 240 klik limitini aradan qaldırır.
+    exact = _trade_duration_control(page, "set_one_minute")
+    if exact.get("ok") and _is_one_minute_duration(str(exact.get("text") or "")):
+        return True, ""
+    if exact.get("exact"):
+        return (
+            False,
+            "Süre idarəsi tapıldı, amma 1 dəqiqə təsdiqlənmədi: "
+            + str(exact.get("text") or "boş"),
+        )
 
     opened = _trade_duration_control(page, "open")
     if not opened.get("ok"):
@@ -3262,6 +3426,14 @@ def _set_platform_trade_duration(page) -> tuple[bool, str]:
 
 def _find_platform_pair_tab(page, pair: str):
     """Return a visible open OlympTrade asset tab for ``pair``, if one exists."""
+    platform_code = PLATFORM_PAIR_CODES.get(pair, pair)
+    exact = _first_visible(
+        page.locator(
+            f'[data-test="asset-select-button-{platform_code}/ftt"]'
+        )
+    )
+    if exact is not None:
+        return exact
     labels = WATCH_PAIR_LABELS.get(pair, ())
     for label in labels:
         target = _first_visible(
@@ -3272,6 +3444,45 @@ def _find_platform_pair_tab(page, pair: str):
         if target is not None:
             return target
     return None
+
+
+def _trim_process_memory() -> None:
+    """Release cyclic and glibc-retained temporary WebSocket parsing memory."""
+    gc.collect()
+    try:
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+        malloc_trim.argtypes = [ctypes.c_size_t]
+        malloc_trim.restype = ctypes.c_int
+        malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
+SELECTED_PLATFORM_PAIR_DOM_SCRIPT = r"""
+({codeToPair}) => {
+  const selected = document.querySelector('[data-test="assets-tabs-tab-selected"]');
+  if (!selected) return {pair: '', code: '', label: ''};
+  const asset = selected.querySelector('[data-test^="asset-select-button-"]');
+  const dataTest = asset?.getAttribute('data-test') || '';
+  const match = dataTest.match(/^asset-select-button-(.+)\/ftt$/i);
+  const code = match ? match[1].toUpperCase() : '';
+  const label = String(selected.innerText || selected.textContent || '')
+    .replace(/\s+/g, ' ').trim();
+  return {pair: codeToPair[code] || '', code, label};
+}
+"""
+
+
+def _selected_platform_pair(page) -> dict:
+    code_to_pair = {code: pair for pair, code in PLATFORM_PAIR_CODES.items()}
+    try:
+        result = page.evaluate(
+            SELECTED_PLATFORM_PAIR_DOM_SCRIPT,
+            {"codeToPair": code_to_pair},
+        )
+    except Exception as exc:
+        return {"pair": "", "code": "", "label": "", "error": str(exc)}
+    return result if isinstance(result, dict) else {"pair": "", "code": "", "label": ""}
 
 
 def _pair_has_recent_market_data(pair: str, max_age: float = 180.0) -> bool:
@@ -3529,10 +3740,8 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
             continue
         for _ in range(28):
             page.wait_for_timeout(250)
-            with state_lock:
-                if state.get("active_pair") == pair:
-                    return True, ""
-            if _pair_has_recent_market_data(pair):
+            selected = _selected_platform_pair(page)
+            if selected.get("pair") == pair and _pair_has_recent_market_data(pair):
                 return True, ""
         return False, f"{pair} seçildi, amma canlı məlumat axını təsdiqlənmədi"
 
@@ -3545,9 +3754,8 @@ def _open_platform_pair(page, pair: str) -> tuple[bool, str]:
 
 def _select_platform_pair(page, pair: str) -> tuple[bool, str]:
     """Select the exact signal asset before any Demo trade button is clicked."""
-    with state_lock:
-        current_pair = state.get("active_pair")
-    if current_pair == pair:
+    selected = _selected_platform_pair(page)
+    if selected.get("pair") == pair:
         return True, ""
 
     target = _find_platform_pair_tab(page, pair)
@@ -3560,13 +3768,13 @@ def _select_platform_pair(page, pair: str) -> tuple[bool, str]:
 
     for _ in range(24):
         page.wait_for_timeout(250)
-        with state_lock:
-            current_pair = state.get("active_pair")
-        if current_pair == pair:
+        selected = _selected_platform_pair(page)
+        if selected.get("pair") == pair and _pair_has_recent_market_data(pair):
             return True, ""
     return (
         False,
-        f"Platform {pair} aktivinə keçidi canlı məlumatla təsdiqləmədi",
+        f"Platform {pair} aktivinə DOM keçidini təsdiqləmədi; "
+        f"seçilən={selected.get('code') or selected.get('label') or 'naməlum'}",
     )
 
 
@@ -3586,8 +3794,7 @@ def _rotate_market_scanner(page, now: float) -> None:
     configured_pairs = [item["pair"] for item in _resolved_watch_assets()]
     if not configured_pairs:
         return
-    with state_lock:
-        current_pair = state.get("active_pair")
+    current_pair = str(_selected_platform_pair(page).get("pair") or "")
     # Server brauzeri aktivləri OlympTrade seçicisindən özü aça bildiyi üçün
     # skaner bütün konfiqurasiya edilmiş aktivləri növbə ilə yoxlayır.
     available_pairs = list(configured_pairs)
@@ -3722,13 +3929,21 @@ def _execute_platform_demo_order(page, order: dict) -> None:
         if order["direction"] == "AL"
         else ("Aşağı", "Asagi", "Down", "Lower", "Put", "Ниже")
     )
-    button = None
+    button = _first_visible(
+        page.locator(
+            '[data-test="deal-button-up"]'
+            if order["direction"] == "AL"
+            else '[data-test="deal-button-down"]'
+        )
+    )
+    if button is not None and not button.is_enabled():
+        button = None
     button_name = button_names[0]
 
     # Prefer an exact accessible button name. OlympTrade sometimes appends the
     # payout percentage to that name, so the broader DOM scan below is only a
     # fallback.
-    for candidate_name in button_names:
+    for candidate_name in button_names if button is None else ():
         candidate = _first_visible(
             page.get_by_role("button", name=candidate_name, exact=True)
         )
@@ -3838,6 +4053,60 @@ def _process_platform_commands(page) -> None:
                 command["error"] = str(exc)
             finally:
                 command["completed"].set()
+        elif command.get("type") == "dom_diagnostics":
+            try:
+                command["result"] = page.evaluate(PLATFORM_DOM_DIAGNOSTICS_SCRIPT)
+                command["error"] = ""
+            except Exception as exc:
+                command["result"] = {}
+                command["error"] = str(exc)
+            finally:
+                command["completed"].set()
+        elif command.get("type") == "verify_controls":
+            try:
+                pair = str(command["pair"])
+                pair_ok, pair_error = _select_platform_pair(page, pair)
+                _inspect_platform_demo(page)
+                with platform_lock:
+                    demo_ok = bool(platform_state["demo_verified"])
+                amount_ok, amount_error = (
+                    _set_platform_trade_amount(page, 1)
+                    if demo_ok and pair_ok
+                    else (False, "Demo hesabı və aktiv təsdiqlənmədi")
+                )
+                duration_ok, duration_error = (
+                    _set_platform_trade_duration(page)
+                    if demo_ok and pair_ok and amount_ok
+                    else (False, "Əvvəlki nəzarət yoxlaması uğursuz oldu")
+                )
+                _inspect_platform_demo(page)
+                selected = _selected_platform_pair(page)
+                duration = _trade_duration_control(page)
+                command["result"] = {
+                    "ok": bool(
+                        demo_ok
+                        and pair_ok
+                        and amount_ok
+                        and duration_ok
+                        and selected.get("pair") == pair
+                    ),
+                    "demo_verified": demo_ok,
+                    "pair": pair,
+                    "selected_pair": selected.get("pair"),
+                    "selected_pair_code": selected.get("code"),
+                    "pair_error": pair_error,
+                    "amount_ok": amount_ok,
+                    "amount_error": amount_error,
+                    "duration_ok": duration_ok,
+                    "duration": duration.get("text"),
+                    "duration_error": duration_error,
+                }
+                command["error"] = ""
+            except Exception as exc:
+                command["result"] = {}
+                command["error"] = str(exc)
+            finally:
+                command["completed"].set()
 
 
 def _settle_platform_orders() -> None:
@@ -3894,6 +4163,7 @@ def run_browser(stop_event: threading.Event) -> None:
                 return
             bound_pages.add(id(candidate))
             candidate.on("websocket", on_websocket)
+            candidate.on("close", lambda: bound_pages.discard(id(candidate)))
 
         def find_or_open_platform_page():
             open_pages = [
@@ -3923,6 +4193,17 @@ def run_browser(stop_event: threading.Event) -> None:
             )
             return candidate
 
+        def close_extra_pages(active_page) -> None:
+            for extra_page in list(context.pages):
+                if extra_page is active_page or extra_page.is_closed():
+                    continue
+                url = str(extra_page.url).lower()
+                if url in {"", "about:blank"} or "olymptrade.com" in url:
+                    try:
+                        extra_page.close()
+                    except Exception:
+                        pass
+
         context.on("page", bind_page)
         for existing_page in context.pages:
             bind_page(existing_page)
@@ -3934,20 +4215,15 @@ def run_browser(stop_event: threading.Event) -> None:
                 timeout=60_000,
             )
         # Bərpa edilmiş profildə qalan əlavə boş tabları göstərməyək.
-        for extra_page in list(context.pages):
-            if (
-                extra_page is not page
-                and not extra_page.is_closed()
-                and str(extra_page.url).lower() in {"", "about:blank"}
-            ):
-                try:
-                    extra_page.close()
-                except Exception:
-                    pass
+        close_extra_pages(page)
         with state_lock:
             state["status"] = "Aktiv (DEMO)"
         log.info("OlympTrade açıldı. Təhlükəsiz DEMO mühərriki aktivdir")
         last_platform_check = 0.0
+        last_duration_check = 0.0
+        last_memory_trim = time.time()
+        last_page_recycle = time.time()
+        last_page_cleanup = time.time()
         try:
             while not stop_event.is_set():
                 try:
@@ -3969,10 +4245,59 @@ def run_browser(stop_event: threading.Event) -> None:
                         state["status"] = "Aktiv (DEMO)"
                     continue
                 now = time.time()
+                if now - last_page_cleanup >= 60.0:
+                    close_extra_pages(page)
+                    last_page_cleanup = now
+                with platform_lock:
+                    browser_idle = not platform_orders and not platform_pending
+                with trade_engine.lock:
+                    browser_idle = browser_idle and not trade_engine.open_positions
+                if browser_idle and now - last_page_recycle >= BROWSER_PAGE_RECYCLE_SEC:
+                    with state_lock:
+                        state["status"] = "OlympTrade yaddaşı yenilənir..."
+                        state["connected"] = False
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                    page = find_or_open_platform_page()
+                    close_extra_pages(page)
+                    with state_lock:
+                        state["status"] = "Aktiv (DEMO)"
+                    last_platform_check = 0.0
+                    last_duration_check = 0.0
+                    last_page_recycle = now
+                    _trim_process_memory()
+                    _event("platform_page_recycled", reason="memory_maintenance")
+                if now - last_memory_trim >= MEMORY_TRIM_SEC:
+                    _trim_process_memory()
+                    last_memory_trim = now
                 if now - last_platform_check >= 1.0:
                     _inspect_platform_demo(page)
                     _settle_platform_orders()
                     last_platform_check = now
+                if now - last_duration_check >= 60.0:
+                    with platform_lock:
+                        duration_idle = not platform_orders and not platform_pending
+                        demo_ready = bool(platform_state["demo_verified"])
+                    with trade_engine.lock:
+                        duration_idle = duration_idle and not trade_engine.open_positions
+                    if demo_ready and duration_idle:
+                        duration_before = _trade_duration_control(page)
+                        if not _is_one_minute_duration(
+                            str(duration_before.get("text") or "")
+                        ):
+                            duration_ok, duration_error = _set_platform_trade_duration(page)
+                            with platform_lock:
+                                platform_state["last_error"] = duration_error
+                            _event(
+                                "platform_demo_duration_checked",
+                                duration=60,
+                                ok=duration_ok,
+                                error=duration_error,
+                            )
+                            _inspect_platform_demo(page)
+                    last_duration_check = now
                 _process_platform_commands(page)
                 _process_platform_orders(page)
                 _rotate_market_scanner(page, now)
@@ -4052,6 +4377,49 @@ def api_platform_demo_screenshot():
             "Content-Disposition": "inline; filename=olymptrade-current.jpg",
         },
     )
+
+
+@app.get("/api/platform-demo/dom-diagnostics")
+def api_platform_demo_dom_diagnostics():
+    """Return bounded, non-secret control metadata from the live Demo page."""
+    command = {
+        "type": "dom_diagnostics",
+        "completed": threading.Event(),
+        "result": {},
+        "error": "",
+    }
+    with platform_lock:
+        platform_commands.append(command)
+    if not command["completed"].wait(timeout=12.0):
+        return jsonify({"error": "OlympTrade DOM diaqnostikası gecikdi"}), 504
+    if command["error"]:
+        return jsonify({"error": command["error"]}), 500
+    return jsonify(command["result"])
+
+
+@app.post("/api/platform-demo/verify-controls")
+def api_platform_demo_verify_controls():
+    """Verify Demo account, amount, duration and asset without opening a trade."""
+    payload = request.get_json(silent=True) or {}
+    pair = str(payload.get("pair") or "")
+    if payload.get("confirmation") != "DEMO":
+        return jsonify({"error": "DEMO təsdiqi tələb olunur"}), 400
+    if pair not in WATCH_PAIR_CODES:
+        return jsonify({"error": "Bu aktiv Demo skanerində yoxdur"}), 400
+    command = {
+        "type": "verify_controls",
+        "pair": pair,
+        "completed": threading.Event(),
+        "result": {},
+        "error": "",
+    }
+    with platform_lock:
+        platform_commands.append(command)
+    if not command["completed"].wait(timeout=45.0):
+        return jsonify({"error": "OlympTrade nəzarət yoxlaması gecikdi"}), 504
+    if command["error"]:
+        return jsonify({"error": command["error"]}), 500
+    return jsonify(command["result"]), (200 if command["result"].get("ok") else 409)
 
 
 @app.post("/api/platform-demo")
